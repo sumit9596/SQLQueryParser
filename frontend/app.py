@@ -1,88 +1,91 @@
 """
-Live SQL Parser - Luxury Glassmorphic UI
-Matches modern high-end Dribbble AI design with translucent frosted glass,
-zero dark-mode clashes, permanently visible table tabs, and interactive hover glow.
+Live SQL Parser - Streamlit front end
+
+Single-file UI. The search bar (typing + live voice dictation) is a small
+custom component written in plain HTML/JS; it is generated next to this file
+in a `_voice_bar/` folder on first run, so nothing extra needs installing.
+The old `streamlit_mic_recorder` package is no longer required.
 """
 
 import sys
 import os
+import io
+import uuid
+import importlib
+from html import escape as esc
 from pathlib import Path
 
-# Add project root directory to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import requests
-from sqlalchemy import inspect
+from sqlalchemy import inspect as sa_inspect
 from dotenv import load_dotenv
 
-# Load .env
 load_dotenv(PROJECT_ROOT / ".env")
 
-# Page Config
 st.set_page_config(
     page_title="Live SQL Parser",
     page_icon="✦",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Backend URL configuration
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
-import io
-
-# Import local agent & database engine with hot-reload support
-import importlib
+# ------------------------------------------------------------------
+# Backend imports. Hot reload is opt-in (set DEV_RELOAD=1) because
+# reloading on every rerun is slow and breaks objects kept in session.
+# ------------------------------------------------------------------
+_import_error = None
 try:
     import core.prompts
     import core.database
     import core.validator
     import core.agent
-    importlib.reload(core.prompts)
-    importlib.reload(core.database)
-    importlib.reload(core.validator)
-    importlib.reload(core.agent)
+
+    if os.getenv("DEV_RELOAD") == "1":
+        for _m in (core.prompts, core.database, core.validator, core.agent):
+            importlib.reload(_m)
+
     from core.agent import SQLAgent
     from core.database import (
         DatabaseManager,
         get_default_db_manager,
         create_file_session_db,
         create_mysql_db_manager,
-        execute_query
     )
     local_agent_available = True
-except Exception:
+except Exception as e:
     local_agent_available = False
+    _import_error = e
 
-try:
-    from streamlit_mic_recorder import speech_to_text
-    voice_input_available = True
-except Exception:
-    voice_input_available = False
+if not local_agent_available:
+    st.error(f"Could not load the query engine (`core` package): {_import_error}")
+    st.stop()
 
-def get_local_agent(db_manager: DatabaseManager = None):
-    """Returns a freshly reloaded SQLAgent instance with active db_manager."""
-    if local_agent_available:
-        try:
-            return SQLAgent(db_manager=db_manager)
-        except Exception:
-            pass
-    return None
 
-def execute_agent_query(user_prompt: str, history=None, db_manager: DatabaseManager = None):
-    """Executes query with multi-turn conversation history and dynamic db_manager support."""
+def get_local_agent(db_manager: "DatabaseManager" = None):
+    try:
+        return SQLAgent(db_manager=db_manager)
+    except Exception as e:
+        st.session_state["agent_error"] = str(e)
+        return None
+
+
+def execute_agent_query(user_prompt: str, history=None, db_manager: "DatabaseManager" = None):
     agent = get_local_agent(db_manager=db_manager)
     if agent:
-        import inspect
-        sig = inspect.signature(agent.run)
+        import inspect as pyinspect
+        params = pyinspect.signature(agent.run).parameters
         kwargs = {}
-        if "history" in sig.parameters:
+        if "history" in params:
             kwargs["history"] = history
-        if "db_manager" in sig.parameters:
+        if "db_manager" in params:
             kwargs["db_manager"] = db_manager
         return agent.run(user_prompt, **kwargs)
 
@@ -90,38 +93,304 @@ def execute_agent_query(user_prompt: str, history=None, db_manager: DatabaseMana
         res = requests.post(
             f"{BACKEND_URL}/ask",
             json={"query": user_prompt, "history": history},
-            timeout=3
+            timeout=30,
         )
         if res.status_code == 200:
             return res.json()
     except Exception:
         pass
-        
+
+    detail = st.session_state.get("agent_error")
     return {
         "success": False,
         "status": "error",
-        "answer": "Unable to connect to intelligence engine.",
+        "answer": "The query engine isn't reachable."
+                  + (f" Details: {detail}" if detail else " Check that the backend is running."),
         "sql_query": None,
-        "data": []
+        "data": [],
     }
 
-# ==========================================
-# ADVANCED GLASSMORPHIC CSS (Zero-Black Theme)
-# ==========================================
+
+def format_sql(query: str, dialect: str = "sqlite") -> str:
+    if not query:
+        return ""
+    try:
+        import sqlglot
+        glot_dialect = "mysql" if "mysql" in dialect.lower() else "sqlite"
+        res = sqlglot.transpile(query, read=glot_dialect, write=glot_dialect, pretty=True)
+        if res and res[0]:
+            return res[0]
+    except Exception:
+        pass
+    return query
+
+
+# ------------------------------------------------------------------
+# Search bar component: typing + live voice dictation
+# ------------------------------------------------------------------
+VOICE_BAR_HTML = r"""<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --rose:#f43f5e; --rose-deep:#e11d48; --ink:#0f172a; --muted:#64748b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:transparent; font-family:'Figtree',-apple-system,BlinkMacSystemFont,sans-serif; }
+  body { padding:6px 8px 26px; }
+
+  .bar {
+    display:flex; align-items:center; gap:8px;
+    background:rgba(255,255,255,.88);
+    border:1.5px solid rgba(255,255,255,.95);
+    border-radius:30px; padding:8px 8px 8px 22px;
+    box-shadow:0 12px 30px rgba(148,163,184,.14), 0 2px 6px rgba(0,0,0,.03);
+    transition:border-color .2s, box-shadow .2s, background .2s;
+  }
+  .bar:hover, .bar:focus-within {
+    background:#fff; border-color:rgba(244,63,94,.45);
+    box-shadow:0 16px 40px rgba(244,63,94,.16), 0 0 0 3px rgba(244,63,94,.09);
+  }
+  .bar.listening {
+    background:#fff; border-color:var(--rose);
+    box-shadow:0 16px 40px rgba(244,63,94,.2), 0 0 0 4px rgba(244,63,94,.1);
+  }
+
+  textarea {
+    flex:1; min-width:0; resize:none; border:none; outline:none; background:transparent;
+    font:500 1.04rem/1.45 'Figtree',sans-serif; color:var(--ink); caret-color:var(--rose);
+    padding:9px 0; height:42px; max-height:120px; overflow-y:auto;
+  }
+  textarea::placeholder { color:#94a3b8; font-weight:400; }
+
+  button { font-family:inherit; cursor:pointer; border:none; background:none; }
+  button:focus-visible { outline:2px solid var(--rose); outline-offset:2px; }
+
+  .icon {
+    width:42px; height:42px; border-radius:50%; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    color:#475569; background:#f1f5f9; transition:background .15s, color .15s, transform .15s;
+  }
+  .icon:hover { background:#e2e8f0; color:var(--ink); }
+  .icon svg { width:19px; height:19px; }
+  .icon.confirm { background:var(--rose); color:#fff; box-shadow:0 6px 16px rgba(244,63,94,.35); }
+  .icon.confirm:hover { background:var(--rose-deep); color:#fff; transform:scale(1.04); }
+
+  .lang {
+    flex:none; font-size:.78rem; font-weight:700; color:#475569;
+    padding:6px 10px; border-radius:999px; background:transparent; border:1px solid #e2e8f0;
+  }
+  .lang:hover { background:#f8fafc; color:var(--ink); }
+
+  .send {
+    flex:none; height:42px; padding:0 22px; border-radius:999px;
+    background:linear-gradient(135deg,#f43f5e,#ec4899); color:#fff;
+    font-weight:700; font-size:.92rem; box-shadow:0 6px 18px rgba(244,63,94,.32);
+    transition:transform .15s, box-shadow .15s, opacity .15s;
+  }
+  .send:hover { transform:translateY(-1px); box-shadow:0 10px 22px rgba(244,63,94,.42); }
+  .send:disabled { opacity:.45; cursor:default; transform:none; box-shadow:none; }
+
+  /* live level bars, only while dictating */
+  .wave { display:none; align-items:center; gap:3px; height:22px; flex:none; margin-left:-6px; }
+  .wave i { width:3px; height:100%; border-radius:3px; background:var(--rose); transform-origin:center;
+            animation:lvl 1s ease-in-out infinite; }
+  .wave i:nth-child(2){animation-delay:.15s} .wave i:nth-child(3){animation-delay:.3s}
+  .wave i:nth-child(4){animation-delay:.12s} .wave i:nth-child(5){animation-delay:.27s}
+  @keyframes lvl { 0%,100%{transform:scaleY(.25)} 50%{transform:scaleY(1)} }
+  @media (prefers-reduced-motion: reduce) { .wave i { animation:none; transform:scaleY(.6); } }
+
+  .listening .wave { display:flex; }
+  .listening .send, .listening #mic, .listening .lang, .listening #clear { display:none; }
+  .bar:not(.listening) #cancel, .bar:not(.listening) #ok { display:none; }
+
+  .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
+  .hint.err { color:var(--rose-deep); }
+
+  @media (max-width:520px) { .lang { display:none; } .send { padding:0 16px; } }
+</style></head>
+<body>
+  <div class="bar" id="bar">
+    <div class="wave" id="wave"><i></i><i></i><i></i><i></i><i></i></div>
+    <textarea id="q" rows="1" spellcheck="false"></textarea>
+    <button class="icon" id="clear" type="button" title="Clear text" aria-label="Clear text" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+    <button class="lang" id="lang" type="button" title="Dictation language">EN</button>
+    <button class="icon" id="mic" type="button" title="Dictate" aria-label="Dictate">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/></svg>
+    </button>
+    <button class="icon" id="cancel" type="button" title="Discard dictation (Esc)" aria-label="Discard dictation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <button class="icon confirm" id="ok" type="button" title="Done, keep this text (Enter)" aria-label="Done">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+    </button>
+    <button class="send" id="send" type="button">Send</button>
+  </div>
+  <div class="hint" id="hint"></div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const q = $('q'), bar = $('bar'), hint = $('hint'), mic = $('mic'), clearBtn = $('clear'), langBtn = $('lang'), sendBtn = $('send');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let lastPrefill = null, rec = null, want = false, base = '', committed = '', lang = 'en-IN';
+
+  function post(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), '*');
+  }
+  function fit() { post('streamlit:setFrameHeight', { height: document.documentElement.scrollHeight }); }
+  function autosize() {
+    q.style.height = 'auto';
+    q.style.height = Math.max(42, Math.min(q.scrollHeight, 120)) + 'px';
+    sendBtn.disabled = !q.value.trim();
+    if (clearBtn) {
+      clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';
+    }
+    fit();
+  }
+  function setHint(t, err) { hint.textContent = t || ''; hint.className = 'hint' + (err ? ' err' : ''); }
+
+  function submit() {
+    const t = q.value.trim();
+    if (!t) return;
+    post('streamlit:setComponentValue', {
+      value: { text: t, id: Date.now() + '-' + Math.random().toString(36).slice(2) },
+      dataType: 'json'
+    });
+  }
+
+  function show(interim) {
+    q.value = [base, committed.trim(), interim.trim()].filter(Boolean).join(' ');
+    autosize();
+    q.scrollTop = q.scrollHeight;
+  }
+
+  function startListening() {
+    if (!SR) {
+      setHint('Voice input requires a Chromium browser (Chrome, Edge, Brave).', true);
+      return;
+    }
+    if (want) return;
+    base = q.value.trim(); committed = ''; want = true;
+    bar.classList.add('listening');
+    setHint('Listening. Speak your question, then tap the tick when you are done.');
+    rec = new SR();
+    rec.lang = lang; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) committed += r[0].transcript + ' '; else interim += r[0].transcript;
+      }
+      show(interim);
+    };
+    rec.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        stopListening(false);
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const isHttps = window.location.protocol === 'https:';
+        if (!isLocal && !isHttps) {
+          setHint('Microphone requires localhost or HTTPS. Browsers block speech dictation on non-secure Wi-Fi IP addresses.', true);
+        } else {
+          setHint('Microphone is blocked. Allow mic access for this site in the browser address bar.', true);
+        }
+      } else if (e.error === 'audio-capture') {
+        stopListening(false);
+        setHint('No microphone found.', true);
+      } else if (e.error === 'network') {
+        stopListening(false);
+        setHint('Speech service needs an internet connection.', true);
+      }
+    };
+    rec.onend = () => { if (want) { try { rec.start(); } catch (_) {} } };
+    try { rec.start(); } catch (_) {}
+    q.focus();
+  }
+
+  function stopListening(keep) {
+    want = false;
+    if (rec) { rec.onresult = null; rec.onend = null; try { rec.stop(); } catch (_) {} }
+    bar.classList.remove('listening');
+    if (!keep) { q.value = base; }
+    if (keep) setHint('');
+    else if (!hint.classList.contains('err')) setHint('');
+    autosize();
+    q.focus();
+  }
+
+  mic.addEventListener('click', startListening);
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      q.value = '';
+      base = '';
+      committed = '';
+      autosize();
+      q.focus();
+      post('streamlit:setComponentValue', {
+        value: { text: '', id: 'clear-' + Date.now() },
+        dataType: 'json'
+      });
+    });
+  }
+  $('ok').addEventListener('click', () => stopListening(true));
+  $('cancel').addEventListener('click', () => stopListening(false));
+  sendBtn.addEventListener('click', submit);
+  langBtn.addEventListener('click', () => {
+    lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN';
+    langBtn.textContent = lang === 'en-IN' ? 'EN' : 'हिं';
+  });
+  q.addEventListener('input', autosize);
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && want) { e.preventDefault(); stopListening(false); }
+    else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (want) stopListening(true); else submit();
+    }
+  });
+
+  window.addEventListener('message', ev => {
+    if (!ev.data || ev.data.type !== 'streamlit:render') return;
+    const a = ev.data.args || {};
+    q.placeholder = a.placeholder || 'Ask a question';
+    if (a.prefill !== lastPrefill && !want) { q.value = a.prefill || ''; }
+    lastPrefill = a.prefill;
+    if (!SR) {
+      mic.title = 'Voice recognition requires Chrome, Edge, or Brave browser';
+      mic.style.opacity = '0.4';
+      mic.style.cursor = 'not-allowed';
+      langBtn.style.display = 'none';
+    }
+    autosize();
+  });
+  new ResizeObserver(fit).observe(document.body);
+  post('streamlit:componentReady', { apiVersion: 1 });
+  autosize();
+</script>
+</body></html>
+"""
+
+_COMP_DIR = Path(__file__).resolve().parent / "_voice_bar"
+_COMP_DIR.mkdir(exist_ok=True)
+_comp_file = _COMP_DIR / "index.html"
+if not _comp_file.exists() or _comp_file.read_text(encoding="utf-8") != VOICE_BAR_HTML:
+    _comp_file.write_text(VOICE_BAR_HTML, encoding="utf-8")
+
+query_bar = components.declare_component("sql_query_bar", path=str(_COMP_DIR))
+
+# ------------------------------------------------------------------
+# Styles (page background unchanged)
+# ------------------------------------------------------------------
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap');
 
-/* Force Light Theme at CSS Level */
 :root, [data-testid="stAppViewContainer"], html, body {
     color-scheme: light !important;
     --text-color: #0f172a !important;
     --background-color: #fbfbfe !important;
-    --secondary-background-color: rgba(255, 255, 255, 0.7) !important;
 }
 
 html, body, [data-testid="stAppViewContainer"], .main {
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-family: 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif !important;
     background: radial-gradient(at 10% 20%, #ffe8ec 0px, transparent 55%),
                 radial-gradient(at 90% 15%, #e8f0fe 0px, transparent 50%),
                 radial-gradient(at 50% 85%, #fff1f5 0px, transparent 60%),
@@ -130,417 +399,138 @@ html, body, [data-testid="stAppViewContainer"], .main {
     color: #0f172a !important;
 }
 
-/* Hide Streamlit Default Chrome while keeping sidebar toggle button visible */
-#MainMenu, footer, [data-testid="stToolbar"] {
-    display: none !important;
-    visibility: hidden !important;
-}
-
-header[data-testid="stHeader"] {
-    background: transparent !important;
-    color: #0f172a !important;
-    height: 2.5rem !important;
-}
-
+#MainMenu, footer, [data-testid="stToolbar"] { display: none !important; visibility: hidden !important; }
+header[data-testid="stHeader"] { background: transparent !important; color: #0f172a !important; height: 2.5rem !important; }
 [data-testid="stSidebarCollapsedControl"] {
-    display: flex !important;
-    visibility: visible !important;
-    color: #0f172a !important;
-    background: rgba(255, 255, 255, 0.95) !important;
-    border-radius: 999px !important;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08) !important;
-    border: 1px solid rgba(226, 232, 240, 0.9) !important;
+    display: flex !important; visibility: visible !important; color: #0f172a !important;
+    background: rgba(255,255,255,.95) !important; border-radius: 999px !important;
+    box-shadow: 0 4px 14px rgba(0,0,0,.08) !important; border: 1px solid rgba(226,232,240,.9) !important;
     z-index: 999999 !important;
 }
 
-/* App Container Layout */
-.block-container {
-    max-width: 920px !important;
-    padding-top: 1.8rem !important;
-    padding-bottom: 3.5rem !important;
-}
+.block-container { max-width: 920px !important; padding-top: 1.8rem !important; padding-bottom: 3.5rem !important; }
 
-/* ========================================== */
-/* TOP NAVIGATION ROW                         */
-/* ========================================== */
-.nav-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.8rem;
-}
+/* Brand */
 .brand-capsule {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.95);
-    padding: 8px 18px;
-    border-radius: 999px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+    display: inline-flex; align-items: center; gap: 9px;
+    background: rgba(255,255,255,.85); backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.95); padding: 8px 18px; border-radius: 999px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.04);
 }
-.brand-sparkle {
-    font-size: 1.1rem;
-    color: #f43f5e;
-    font-weight: 800;
-}
-.brand-title {
-    font-weight: 700;
-    font-size: 0.95rem;
-    color: #0f172a;
-    letter-spacing: -0.01em;
-}
-.connect-pill {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.95);
-    padding: 8px 18px;
-    border-radius: 999px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: #334155;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
-}
-.connect-pill span.dot {
-    width: 8px;
-    height: 8px;
-    background: #10b981;
-    border-radius: 50%;
-    box-shadow: 0 0 10px #10b981;
-}
+.brand-sparkle { font-size: 1.05rem; color: #f43f5e; font-weight: 800; }
+.brand-title { font-weight: 700; font-size: .95rem; color: #0f172a; letter-spacing: -.01em; }
 
-/* ========================================== */
-/* HERO SECTION & 3D FLOATING ORB (FIXED)     */
-/* ========================================== */
-.hero-fixed-wrapper {
-    position: fixed;
-    top: 65px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 100%;
-    max-width: 920px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    z-index: 0;
-    pointer-events: none;
-    text-align: center;
+/* Hero */
+.hero { padding: 2.2rem 0 1.4rem 0; }
+.hero h1 {
+    font-family: 'Fraunces', Georgia, serif !important;
+    font-size: 3rem; font-weight: 700; line-height: 1.08; letter-spacing: -.025em;
+    color: #0f172a; margin: 0 0 .85rem 0; padding: 0; max-width: 640px;
 }
+.hero p { font-size: 1.06rem; line-height: 1.6; color: #475569; font-weight: 500; max-width: 600px; margin: 0 0 1.3rem 0; }
+.source-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: .88rem; color: #334155; font-weight: 600; }
+.source-line .live { width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; }
+.dialect-badge {
+    background: rgba(99,102,241,.1); color: #4f46e5; font-weight: 700; font-size: .75rem;
+    padding: 3px 9px; border-radius: 6px; border: 1px solid rgba(99,102,241,.25);
+}
+.source-line .sep { color: #cbd5e1; }
 
-.hero-spacer {
-    height: 235px;
-    width: 100%;
-    pointer-events: none;
-}
-
-/* Ensure scrolling content floats above fixed hero with frosted glass */
-[data-testid="stForm"],
-[data-testid="stVerticalBlockBorderWrapper"],
-.stButton,
-div[data-testid="stPopover"],
-div[data-testid="stHorizontalBlock"] {
-    position: relative !important;
-    z-index: 5 !important;
-}
-
-/* Pinned Sticky Top Nav */
-div[data-testid="stHorizontalBlock"]:first-of-type {
-    position: sticky !important;
-    top: 0 !important;
-    z-index: 9999 !important;
-    background: rgba(250, 250, 252, 0.9) !important;
-    backdrop-filter: blur(20px) !important;
-    padding-top: 6px !important;
-    padding-bottom: 6px !important;
-}
-
-.hero-headline {
-    text-align: center;
-    font-size: 2.6rem;
-    font-weight: 700;
-    color: #64748b;
-    line-height: 1.3;
-    margin-bottom: 0.2rem;
-    letter-spacing: -0.025em;
-}
-.hero-headline strong {
-    color: #0f172a;
-    font-weight: 800;
-}
-
-.orb-stage {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 1.4rem 0 1.8rem 0;
-}
-.orb-sphere {
-    width: 195px;
-    height: 195px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, 
-                rgba(255, 255, 255, 0.98) 0%, 
-                rgba(255, 192, 203, 0.78) 25%, 
-                rgba(244, 114, 182, 0.68) 45%, 
-                rgba(167, 139, 250, 0.72) 70%, 
-                rgba(56, 189, 248, 0.82) 100%);
-    box-shadow: 0 25px 60px rgba(244, 114, 182, 0.3),
-                0 10px 25px rgba(167, 139, 250, 0.22),
-                inset 0 -15px 30px rgba(14, 165, 233, 0.5),
-                inset 0 15px 30px rgba(255, 255, 255, 0.9);
-    position: relative;
-    animation: floatOrb 5s ease-in-out infinite;
-}
-.orb-reflection {
-    width: 135px;
-    height: 16px;
-    background: radial-gradient(ellipse at center, rgba(167, 139, 250, 0.3) 0%, rgba(244, 114, 182, 0.15) 40%, transparent 70%);
-    border-radius: 50%;
-    margin-top: 22px;
-    filter: blur(5px);
-    animation: scaleShadow 5s ease-in-out infinite;
-}
-
-@keyframes floatOrb {
-    0%, 100% { transform: translateY(0px) rotate(0deg); }
-    50% { transform: translateY(-12px) rotate(2deg); }
-}
-@keyframes scaleShadow {
-    0%, 100% { transform: scale(1); opacity: 0.65; }
-    50% { transform: scale(0.85); opacity: 0.35; }
-}
-
-/* ========================================== */
-/* INPUT CAPSULE - ZERO BLACK, TRANSLUCENT   */
-/* ========================================== */
-[data-testid="stForm"] {
-    background: rgba(255, 255, 255, 0.65) !important;
-    backdrop-filter: blur(28px) !important;
-    border: 1.5px solid rgba(255, 255, 255, 0.95) !important;
-    border-radius: 28px !important;
-    padding: 10px 18px 10px 22px !important;
-    box-shadow: 0 15px 35px rgba(148, 163, 184, 0.1), 
-                0 2px 6px rgba(0, 0, 0, 0.02) !important;
-    margin-top: 0.5rem !important;
-    margin-bottom: 1.5rem !important;
-    transition: all 0.25s ease-in-out !important;
-}
-
-/* Glowing Hover State on Input Container */
-[data-testid="stForm"]:hover,
-[data-testid="stForm"]:focus-within {
-    background: rgba(255, 255, 255, 0.85) !important;
-    border: 1.5px solid rgba(244, 63, 94, 0.45) !important;
-    box-shadow: 0 18px 45px rgba(244, 63, 94, 0.18), 
-                0 0 0 3px rgba(244, 63, 94, 0.1) !important;
-}
-
-/* Eradicate ALL Black Backgrounds on Inner Inputs */
-[data-testid="stTextInput"],
-div[data-baseweb="input"],
-div[data-baseweb="base-input"],
-div[data-baseweb="input"] > div,
-[data-testid="stTextInput"] > div,
-[data-testid="stTextInput"] > div > div {
-    background: transparent !important;
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* The actual text input field */
-[data-testid="stTextInput"] input,
-div[data-baseweb="input"] input,
-input[type="text"] {
-    background: transparent !important;
-    background-color: transparent !important;
-    border: none !important;
-    font-size: 1.05rem !important;
-    font-weight: 500 !important;
-    color: #0f172a !important; /* Pitch Dark Charcoal */
-    caret-color: #f43f5e !important;
-    padding: 9px 0px !important;
-    box-shadow: none !important;
-    outline: none !important;
-}
-
-input::placeholder {
-    color: #94a3b8 !important;
-    font-weight: 400 !important;
-    opacity: 1 !important;
-}
-
-/* Send Button */
-[data-testid="stFormSubmitButton"] button {
-    background: linear-gradient(135deg, #f43f5e 0%, #ec4899 100%) !important;
-    color: white !important;
-    font-weight: 700 !important;
-    border: none !important;
-    border-radius: 999px !important;
-    padding: 10px 24px !important;
-    font-size: 0.92rem !important;
-    box-shadow: 0 6px 18px rgba(244, 63, 94, 0.35) !important;
-    transition: all 0.2s ease !important;
-}
-[data-testid="stFormSubmitButton"] button:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 10px 24px rgba(244, 63, 94, 0.45) !important;
-}
-
-/* ========================================== */
-/* QUICK PILL CHIPS & HOVER EFFECTS          */
-/* ========================================== */
+/* Buttons / chips */
 .stButton button {
-    background: rgba(255, 255, 255, 0.72) !important;
-    backdrop-filter: blur(14px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.95) !important;
-    color: #334155 !important;
-    font-weight: 600 !important;
-    font-size: 0.85rem !important;
-    border-radius: 999px !important;
-    padding: 7px 16px !important;
-    box-shadow: 0 4px 12px rgba(148, 163, 184, 0.07) !important;
-    transition: all 0.2s ease !important;
+    background: rgba(255,255,255,.72) !important; backdrop-filter: blur(14px) !important;
+    border: 1px solid rgba(255,255,255,.95) !important; color: #334155 !important;
+    font-weight: 600 !important; font-size: .85rem !important; border-radius: 999px !important;
+    padding: 7px 16px !important; box-shadow: 0 4px 12px rgba(148,163,184,.07) !important;
+    transition: all .2s ease !important;
 }
 .stButton button:hover {
-    background: #ffffff !important;
-    color: #0f172a !important;
-    border-color: rgba(244, 63, 94, 0.35) !important;
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 18px rgba(244, 63, 94, 0.15) !important;
+    background: #fff !important; color: #0f172a !important; border-color: rgba(244,63,94,.35) !important;
+    transform: translateY(-1px) !important; box-shadow: 0 8px 18px rgba(244,63,94,.13) !important;
 }
 
-/* ========================================== */
-/* TABLE EXPLORER TABS - PERMANENT VISIBILITY*/
-/* ========================================== */
+/* Popover + tabs */
 [data-testid="stPopoverBody"] {
-    background: #ffffff !important;
-    border: 1px solid rgba(226, 232, 240, 0.95) !important;
-    border-radius: 20px !important;
-    padding: 20px !important;
-    box-shadow: 0 25px 60px rgba(148, 163, 184, 0.2) !important;
-    color: #0f172a !important;
+    background: #fff !important; border: 1px solid rgba(226,232,240,.95) !important;
+    border-radius: 20px !important; padding: 20px !important;
+    box-shadow: 0 25px 60px rgba(148,163,184,.2) !important; color: #0f172a !important;
 }
-
-/* Fix Tab Header Buttons - Crystal Clear Dark Text */
 button[data-baseweb="tab"] {
-    background: #f1f5f9 !important;
-    color: #0f172a !important; /* Pitch Dark Text */
-    font-weight: 700 !important;
-    font-size: 0.88rem !important;
-    border-radius: 999px !important;
-    padding: 8px 18px !important;
-    border: 1px solid #e2e8f0 !important;
-    margin-right: 6px !important;
-    opacity: 1 !important;
+    background: #f1f5f9 !important; color: #0f172a !important; font-weight: 700 !important;
+    font-size: .88rem !important; border-radius: 999px !important; padding: 8px 18px !important;
+    border: 1px solid #e2e8f0 !important; margin-right: 6px !important; opacity: 1 !important;
 }
-
 button[data-baseweb="tab"][aria-selected="true"] {
-    background: linear-gradient(135deg, #f43f5e, #ec4899) !important;
-    color: #ffffff !important; /* White on Active Rose Tab */
-    border: none !important;
-    box-shadow: 0 4px 12px rgba(244, 63, 94, 0.3) !important;
+    background: linear-gradient(135deg,#f43f5e,#ec4899) !important; color: #fff !important;
+    border: none !important; box-shadow: 0 4px 12px rgba(244,63,94,.3) !important;
 }
+button[data-baseweb="tab"]:hover { background: #e2e8f0 !important; }
+button[data-baseweb="tab"][aria-selected="true"]:hover { background: linear-gradient(135deg,#f43f5e,#ec4899) !important; }
 
-button[data-baseweb="tab"]:hover {
-    background: #e2e8f0 !important;
-    color: #0f172a !important;
-}
-
-/* DataFrame Table Styling */
 [data-testid="stDataFrame"], div[data-testid="stTable"] {
-    background: #ffffff !important;
-    border-radius: 14px !important;
+    background: #fff !important; border-radius: 14px !important; border: 1px solid #e2e8f0 !important; overflow: hidden !important;
+}
+
+/* Result card (top level only, so nested cards stay flat) */
+.main div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(255,255,255,.8) !important; backdrop-filter: blur(28px) !important;
+    border: 1px solid rgba(255,255,255,.95) !important; border-radius: 24px !important;
+    padding: 18px 22px !important; box-shadow: 0 15px 35px rgba(148,163,184,.12) !important;
+    margin-top: 1.2rem !important;
+}
+.main div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(248,250,252,.85) !important; border-radius: 16px !important;
+    box-shadow: none !important; margin-top: .6rem !important; padding: 14px 16px !important;
     border: 1px solid #e2e8f0 !important;
-    overflow: hidden !important;
 }
 
-/* Result Card Container */
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    background: rgba(255, 255, 255, 0.8) !important;
-    backdrop-filter: blur(28px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.95) !important;
-    border-radius: 24px !important;
-    padding: 18px 22px !important;
-    box-shadow: 0 15px 35px rgba(148, 163, 184, 0.12) !important;
-    margin-top: 1.5rem !important;
-}
-
-/* Sidebar Glassmorphism */
+/* Sidebar */
 [data-testid="stSidebar"] {
-    background: rgba(255, 255, 255, 0.75) !important;
-    backdrop-filter: blur(28px) !important;
-    border-right: 1px solid rgba(226, 232, 240, 0.85) !important;
-}
-[data-testid="stSidebar"] hr {
-    border-color: rgba(226, 232, 240, 0.8) !important;
-}
-[data-testid="stSidebar"] [data-testid="stForm"] {
-    border-radius: 16px !important;
-    padding: 12px 14px !important;
+    background: rgba(255,255,255,.75) !important; backdrop-filter: blur(28px) !important;
+    border-right: 1px solid rgba(226,232,240,.85) !important;
 }
 [data-testid="stFileUploader"] {
-    background: rgba(255, 255, 255, 0.8) !important;
-    border-radius: 14px !important;
-    border: 1.5px dashed #cbd5e1 !important;
-    padding: 10px !important;
+    background: rgba(255,255,255,.8) !important; border-radius: 14px !important;
+    border: 1.5px dashed #cbd5e1 !important; padding: 10px !important;
 }
 
-/* Column Chips & Schema Pills */
-.schema-col-wrap {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 8px;
-    margin-bottom: 10px;
-}
-.col-chip {
-    background: #f8fafc;
-    color: #1e293b;
-    border: 1px solid #e2e8f0;
-    padding: 5px 12px;
-    border-radius: 8px;
-    font-size: 0.83rem;
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-    transition: all 0.2s ease;
-    display: inline-block;
-}
-.col-chip:hover {
-    background: #ffffff;
-    border-color: #f43f5e;
-    color: #f43f5e;
-    transform: translateY(-1px);
-}
+/* Answer + steps */
+.answer-box { border-left: 4px solid #f43f5e; background: rgba(244,63,94,.05); border-radius: 14px; padding: 14px 18px; margin-bottom: 16px; }
+.answer-label { font-weight: 700; color: #e11d48; font-size: .86rem; margin-bottom: 4px; }
+.answer-text { color: #0f172a; font-size: 1.04rem; line-height: 1.55; font-weight: 500; }
+.step-line { background: rgba(241,245,249,.75); border-left: 3px solid #6366f1; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: .9rem; color: #0f172a; font-weight: 500; }
+
+.schema-col-wrap { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 10px; }
+.col-chip { background: #f8fafc; color: #1e293b; border: 1px solid #e2e8f0; padding: 4px 11px; border-radius: 8px; font-size: .83rem; font-weight: 600; }
+.small-muted { font-size: .82rem; color: #64748b; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# SESSION STATE INITIALIZATION
-# ==========================================
-if "query_input" not in st.session_state:
-    st.session_state["query_input"] = ""
-if "auto_run" not in st.session_state:
-    st.session_state["auto_run"] = False
-if "last_result" not in st.session_state:
-    st.session_state["last_result"] = None
-if "chat_history" not in st.session_state:
-    st.session_state["chat_history"] = []
-if "active_source" not in st.session_state:
-    st.session_state["active_source"] = "college"
-if "uploaded_db" not in st.session_state:
-    st.session_state["uploaded_db"] = None
-if "mysql_db" not in st.session_state:
-    st.session_state["mysql_db"] = None
+# ------------------------------------------------------------------
+# Session state
+# ------------------------------------------------------------------
+_defaults = {
+    "query_input": "", "auto_run": False, "last_result": None, "chat_history": [],
+    "active_source": "college", "uploaded_db": None, "mysql_db": None,
+    "last_bar_id": None, "sid": uuid.uuid4().hex[:10],
+}
+for k, v in _defaults.items():
+    st.session_state.setdefault(k, v)
 
-def get_active_db() -> DatabaseManager:
-    """Returns the currently active DatabaseManager based on user selection."""
+
+def reset_conversation():
+    st.session_state["chat_history"] = []
+    st.session_state["last_result"] = None
+    st.session_state["query_input"] = ""
+    try:
+        agent = get_local_agent(db_manager=get_active_db())
+        if agent and hasattr(agent, "clear_memory"):
+            agent.clear_memory()
+    except Exception:
+        pass
+
+
+def get_active_db():
     src = st.session_state.get("active_source", "college")
     if src == "upload" and st.session_state.get("uploaded_db"):
         return st.session_state["uploaded_db"]
@@ -548,464 +538,374 @@ def get_active_db() -> DatabaseManager:
         return st.session_state["mysql_db"]
     return get_default_db_manager()
 
-def render_database_source_selector(key_prefix: str = "main"):
-    """Renders the 3 data source switcher tabs (Demo DB, Upload CSV/Excel, Connect MySQL)."""
-    tab_demo, tab_upload, tab_mysql = st.tabs(["🏛️ College Demo", "📁 Upload Files", "🐬 Connect MySQL"])
 
-    # 1. College Demo DB
+def ask(text: str):
+    st.session_state["query_input"] = text
+    st.session_state["auto_run"] = True
+    st.rerun()
+
+
+def render_database_source_selector(key_prefix="main"):
+    tab_demo, tab_upload, tab_mysql = st.tabs(["College demo", "Upload files", "MySQL"])
+
     with tab_demo:
-        st.markdown("<div style='font-size:0.9rem; font-weight:700; color:#1e293b; margin-top:6px;'>College Demo DB (SQLite)</div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:0.82rem; color:#64748b; margin-bottom:12px;'>Pre-loaded tables: <code>students</code>, <code>departments</code>, <code>marks</code></div>", unsafe_allow_html=True)
-        
+        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>College demo (SQLite)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:12px;'>Sample data with <code>students</code>, <code>departments</code> and <code>marks</code>.</div>", unsafe_allow_html=True)
         if st.session_state.get("active_source") == "college":
-            st.success("🟢 Currently Active Database")
-        else:
-            if st.button("Switch to College DB", key=f"{key_prefix}_switch_college", use_container_width=True):
-                st.session_state["active_source"] = "college"
-                st.session_state["chat_history"] = []
-                st.session_state["last_result"] = None
-                st.session_state["query_input"] = ""
-                st.rerun()
+            st.success("This is the active database.")
+        elif st.button("Use the college demo", key=f"{key_prefix}_switch_college", width="stretch"):
+            st.session_state["active_source"] = "college"
+            reset_conversation()
+            st.rerun()
 
-    # 2. Upload CSV / Excel
     with tab_upload:
-        st.markdown("<div style='font-size:0.9rem; font-weight:700; color:#1e293b; margin-top:6px;'>Drag & Drop Custom Tables</div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:0.82rem; color:#64748b; margin-bottom:10px;'>Upload CSV or Excel files. Tables are created instantly in session memory.</div>", unsafe_allow_html=True)
-        
+        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Bring your own tables</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Drop in CSV or Excel files. Each file (or sheet) becomes a table, kept in memory for this session only.</div>", unsafe_allow_html=True)
         up_files = st.file_uploader(
-            "Choose CSV/Excel files",
-            type=["csv", "xlsx", "xls"],
-            accept_multiple_files=True,
-            key=f"{key_prefix}_file_uploader",
-            label_visibility="collapsed"
+            "Choose CSV or Excel files", type=["csv", "xlsx", "xls"],
+            accept_multiple_files=True, key=f"{key_prefix}_file_uploader", label_visibility="collapsed",
         )
         if up_files:
-            st.markdown(f"<div style='font-size:0.82rem; color:#475569; margin-bottom:8px;'>Selected: <strong>{len(up_files)} file(s)</strong></div>", unsafe_allow_html=True)
-            if st.button("🚀 Ingest & Activate Tables", key=f"{key_prefix}_ingest_btn", use_container_width=True):
-                with st.spinner("Processing tables into session database..."):
+            if st.button(f"Load {len(up_files)} file(s)", key=f"{key_prefix}_ingest_btn", width="stretch"):
+                with st.spinner("Building tables..."):
                     files_dict = {}
                     for uf in up_files:
                         try:
-                            lower_name = uf.name.lower()
-                            if lower_name.endswith(".csv"):
-                                files_dict[uf.name] = pd.read_csv(uf)
-                            elif lower_name.endswith((".xlsx", ".xls")):
-                                excel_file = pd.ExcelFile(uf, engine="openpyxl")
-                                if len(excel_file.sheet_names) == 1:
-                                    files_dict[uf.name] = excel_file.parse(excel_file.sheet_names[0])
+                            lower = uf.name.lower()
+                            if lower.endswith(".csv"):
+                                try:
+                                    df = pd.read_csv(uf, encoding="utf-8", encoding_errors="replace")
+                                except Exception:
+                                    uf.seek(0)
+                                    df = pd.read_csv(uf, encoding="latin1", encoding_errors="replace")
+                                files_dict[uf.name] = df
+                            else:
+                                xl = pd.ExcelFile(uf, engine="openpyxl")
+                                if len(xl.sheet_names) == 1:
+                                    files_dict[uf.name] = pd.read_excel(uf, sheet_name=xl.sheet_names[0], engine="openpyxl")
                                 else:
-                                    base_stem = Path(uf.name).stem
-                                    for s_name in excel_file.sheet_names:
-                                        tbl_key = f"{base_stem}_{s_name}"
-                                        files_dict[tbl_key] = excel_file.parse(s_name)
-                        except Exception as read_err:
-                            st.error(f"Error reading {uf.name}: {read_err}")
-                    
+                                    stem = Path(uf.name).stem
+                                    for s in xl.sheet_names:
+                                        files_dict[f"{stem}_{s}"] = pd.read_excel(uf, sheet_name=s, engine="openpyxl")
+                        except Exception as err:
+                            st.error(f"Couldn't read {uf.name}: {err}")
                     if files_dict:
-                        new_db = create_file_session_db(files_dict, session_id="user_session")
-                        st.session_state["uploaded_db"] = new_db
+                        st.session_state["uploaded_db"] = create_file_session_db(
+                            files_dict, session_id=f"user_{st.session_state['sid']}"
+                        )
                         st.session_state["active_source"] = "upload"
-                        st.session_state["chat_history"] = []
-                        st.session_state["last_result"] = None
-                        st.session_state["query_input"] = ""
-                        st.toast("✅ Tables ingested and activated!", icon="🚀")
+                        reset_conversation()
+                        st.toast("Tables loaded.")
                         st.rerun()
-
         if st.session_state.get("active_source") == "upload" and st.session_state.get("uploaded_db"):
-            st.success(f"🟢 Active: {st.session_state['uploaded_db'].name}")
+            st.success(f"Active: {st.session_state['uploaded_db'].name}")
+            if st.button("Reset to College Demo", key=f"{key_prefix}_clear_uploaded", width="stretch"):
+                st.session_state["uploaded_db"] = None
+                st.session_state["active_source"] = "college"
+                reset_conversation()
+                st.rerun()
 
-    # 3. Connect MySQL
     with tab_mysql:
-        st.markdown("<div style='font-size:0.9rem; font-weight:700; color:#1e293b; margin-top:6px;'>Connect MySQL Database</div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:0.82rem; color:#64748b; margin-bottom:8px;'>Read-only transaction mode is strictly enforced.</div>", unsafe_allow_html=True)
-        
+        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Connect to MySQL</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:8px;'>Connections run in read-only mode.</div>", unsafe_allow_html=True)
         with st.form(f"{key_prefix}_mysql_form"):
             m_host = st.text_input("Host", value="localhost", key=f"{key_prefix}_mhost")
-            m_port = st.number_input("Port", value=3306, step=1, key=f"{key_prefix}_mport")
+            m_port = st.number_input("Port", value=3306, step=1, format="%d", key=f"{key_prefix}_mport")
             m_user = st.text_input("User", value="root", key=f"{key_prefix}_muser")
             m_pass = st.text_input("Password", type="password", key=f"{key_prefix}_mpass")
-            m_db = st.text_input("Database Name", placeholder="e.g. ecommerce", key=f"{key_prefix}_mdb")
-            m_submit = st.form_submit_button("🔌 Test & Connect", use_container_width=True)
-
+            m_db = st.text_input("Database name", placeholder="e.g. ecommerce", key=f"{key_prefix}_mdb")
+            m_submit = st.form_submit_button("Connect", width="stretch")
             if m_submit:
                 if not m_db.strip():
-                    st.error("Please provide a database name.")
+                    st.error("Enter a database name.")
                 else:
-                    # Auto-clean accidental paste errors (e.g. 'localhostgateway01...' or 'https://')
                     clean_host = m_host.strip()
-                    if clean_host.startswith("localhost") and len(clean_host) > len("localhost") and not clean_host.startswith("localhost:"):
-                        clean_host = clean_host[len("localhost"):].strip()
-                    if clean_host.startswith("https://"):
-                        clean_host = clean_host[len("https://"):].strip()
-                    if clean_host.startswith("http://"):
-                        clean_host = clean_host[len("http://"):].strip()
-
-                    with st.spinner(f"Connecting to MySQL '{m_db}'..."):
+                    if clean_host.startswith("localhost") and len(clean_host) > 9 and not clean_host.startswith("localhost:"):
+                        clean_host = clean_host[9:].strip()
+                    for prefix in ("https://", "http://"):
+                        if clean_host.startswith(prefix):
+                            clean_host = clean_host[len(prefix):].strip()
+                    with st.spinner(f"Connecting to {m_db}..."):
                         ok, mgr, msg = create_mysql_db_manager(
-                            host=clean_host,
-                            port=int(m_port),
-                            user=m_user.strip(),
-                            password=m_pass,
-                            dbname=m_db.strip()
+                            host=clean_host, port=int(m_port), user=m_user.strip(),
+                            password=m_pass, dbname=m_db.strip(),
                         )
                         if ok and mgr:
                             st.session_state["mysql_db"] = mgr
                             st.session_state["active_source"] = "mysql"
-                            st.session_state["chat_history"] = []
-                            st.session_state["last_result"] = None
-                            st.session_state["query_input"] = ""
-                            st.toast("✅ Connected to MySQL!", icon="🐬")
+                            reset_conversation()
+                            st.toast("Connected to MySQL.")
                             st.rerun()
                         else:
                             st.error(msg)
-
         if st.session_state.get("active_source") == "mysql" and st.session_state.get("mysql_db"):
-            st.success(f"🟢 Active: {st.session_state['mysql_db'].name}")
+            st.success(f"Active: {st.session_state['mysql_db'].name}")
+            if st.button("Disconnect MySQL", key=f"{key_prefix}_disconnect_mysql", width="stretch"):
+                st.session_state["mysql_db"] = None
+                st.session_state["active_source"] = "college"
+                reset_conversation()
+                st.rerun()
 
-# ==========================================
-# RENDER SIDEBAR
-# ==========================================
+
+# ------------------------------------------------------------------
+# Sidebar
+# ------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("<div style='display:flex; align-items:center; gap:8px; margin-bottom:2px;'><span style='font-size:1.3rem; color:#f43f5e;'>🗄️</span><h3 style='margin:0; color:#0f172a;'>Data Sources</h3></div>", unsafe_allow_html=True)
-    st.markdown("<p style='font-size:0.82rem; color:#64748b; margin-bottom:14px;'>Connect live databases or bring your own tables.</p>", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin:0 0 2px 0; color:#0f172a;'>Data sources</h3>", unsafe_allow_html=True)
+    st.markdown("<p class='small-muted' style='margin-bottom:14px;'>Pick where your questions should run.</p>", unsafe_allow_html=True)
     render_database_source_selector(key_prefix="sidebar")
 
-# Re-resolve active database
 active_db = get_active_db()
 active_name = active_db.name
 active_dialect = active_db.get_db_dialect().upper()
-
-# ==========================================
-# FLOATING TOP NAV (Dual Capsule: Brand + Source Popover)
-# ==========================================
-top_c1, top_c2 = st.columns([1, 1.4])
-with top_c1:
-    st.markdown("""
-    <div class="brand-capsule" style="display:inline-flex;">
-        <span class="brand-sparkle">✦</span>
-        <span class="brand-title">Live SQL Parser</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-with top_c2:
-    with st.popover(f"🗄️ Database: {active_name} ({active_dialect}) ▾", use_container_width=True):
-        st.markdown("<h4 style='margin-top:0; color:#0f172a;'>🗄️ Change Active Database Source</h4>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:0.84rem; color:#64748b;'>Select between the default demo database, your uploaded CSV/Excel files, or a live MySQL server:</p>", unsafe_allow_html=True)
-        render_database_source_selector(key_prefix="main_nav")
-
-# ==========================================
-# 3D FLOATING ORB (FIXED BACKGROUND STAGE)
-# ==========================================
-st.markdown("""<div class="hero-fixed-wrapper">
-<div class="orb-stage">
-<div class="orb-sphere"></div>
-<div class="orb-reflection"></div>
-</div>
-</div>
-<div class="hero-spacer"></div>""", unsafe_allow_html=True)
-
-# ==========================================
-# QUICK ACTION PILL CHIPS & VIEW TABLES POPOVER
-# ==========================================
 tables_found = active_db.get_table_names()
 current_source = st.session_state.get("active_source", "college")
 
-c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1.1])
-
-if current_source == "college":
-    with c1:
-        if st.button("⚡ Roll 5 Profile", use_container_width=True):
-            st.session_state["query_input"] = "Show student with roll number 5 and his marks"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c2:
-        if st.button("📈 Top 3 Students", use_container_width=True):
-            st.session_state["query_input"] = "Show top 3 students with highest marks"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c3:
-        if st.button("🏢 CS Department", use_container_width=True):
-            st.session_state["query_input"] = "List all students in Computer Science department"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c4:
-        if st.button("📊 Subject Averages", use_container_width=True):
-            st.session_state["query_input"] = "Show average marks for each subject"
-            st.session_state["auto_run"] = True
-            st.rerun()
-else:
-    # Custom DB / Uploaded tables dynamic action chips
-    t1 = tables_found[0] if len(tables_found) > 0 else "table"
-    t2 = tables_found[1] if len(tables_found) > 1 else t1
-    with c1:
-        if st.button(f"🔍 Top in {t1[:10]}", use_container_width=True):
-            st.session_state["query_input"] = f"Show top 5 records from {t1}"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c2:
-        if st.button(f"🔢 Count {t1[:10]}", use_container_width=True):
-            st.session_state["query_input"] = f"Count the total number of records in {t1}"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c3:
-        if st.button(f"📊 Sample {t2[:10]}", use_container_width=True):
-            st.session_state["query_input"] = f"Show 5 sample rows from {t2}"
-            st.session_state["auto_run"] = True
-            st.rerun()
-    with c4:
-        if st.button("🗂️ View Schema", use_container_width=True):
-            st.session_state["query_input"] = "What tables and columns exist in this database?"
-            st.session_state["auto_run"] = True
-            st.rerun()
-
-with c5:
-    with st.popover("🗂️ View Tables", use_container_width=True):
-        st.markdown(f"<h3 style='margin-top:0; color:#0f172a;'>📋 {active_name} Schema</h3>", unsafe_allow_html=True)
+# ------------------------------------------------------------------
+# Top row: Brand & Database Controls
+# ------------------------------------------------------------------
+n_tables = len(tables_found)
+top_c1, top_c2, top_c3 = st.columns([1.3, 1.1, 1.1])
+with top_c1:
+    st.markdown('<div class="brand-capsule"><span class="brand-sparkle">✦</span><span class="brand-title">Live SQL Parser</span></div>', unsafe_allow_html=True)
+with top_c2:
+    with st.popover(f"📂 {active_name}", width="stretch"):
+        st.markdown("<h4 style='margin-top:0; color:#0f172a;'>Switch database</h4>", unsafe_allow_html=True)
+        render_database_source_selector(key_prefix="main_nav")
+with top_c3:
+    with st.popover(f"🔍 Browse tables ({n_tables})", width="stretch"):
+        st.markdown(f"<h3 style='margin-top:0; color:#0f172a;'>{esc(str(active_name))}</h3>", unsafe_allow_html=True)
         if not tables_found:
-            st.info("No tables detected in the active database. Upload a CSV/Excel or connect MySQL from the sidebar.")
+            st.info("This database has no tables yet. Upload a CSV or Excel file, or connect MySQL, from the sidebar.")
         else:
-            st.markdown(f"<p style='color:#64748b; font-size:0.88rem;'>Discovered <strong>{len(tables_found)} table(s)</strong> in active database:</p>", unsafe_allow_html=True)
-            preview_tables = tables_found[:6]
-            tabs = st.tabs([t.title().replace("_", " ") for t in preview_tables])
-            for tab, t_name in zip(tabs, preview_tables):
+            shown = tables_found[:6]
+            extra = n_tables - len(shown)
+            st.markdown(f"<p class='small-muted'>{n_tables} table(s)" + (f", showing the first {len(shown)}" if extra > 0 else "") + ".</p>", unsafe_allow_html=True)
+            tabs = st.tabs([t.title().replace("_", " ") for t in shown])
+            for tab, t_name in zip(tabs, shown):
                 with tab:
                     res_p = active_db.preview_table(t_name, limit=5)
                     if res_p["success"]:
-                        cols_str = " &bull; ".join(f"<code>{c}</code>" for c in res_p["columns"][:8])
-                        st.markdown(f"<div style='margin-bottom:8px; font-size:0.83rem; color:#475569;'><strong>Columns:</strong> {cols_str}</div>", unsafe_allow_html=True)
-                        st.dataframe(pd.DataFrame(res_p["rows"]), use_container_width=True)
+                        cols_str = ", ".join(f"<code>{esc(str(c))}</code>" for c in res_p["columns"][:8])
+                        st.markdown(f"<div class='small-muted' style='margin-bottom:8px;'>Columns: {cols_str}</div>", unsafe_allow_html=True)
+                        st.dataframe(pd.DataFrame(res_p["rows"]), width="stretch")
                     else:
-                        st.warning(f"Unable to preview {t_name}: {res_p.get('error')}")
+                        st.warning(f"Couldn't preview {t_name}: {res_p.get('error')}")
 
-# ==========================================
-# CONVERSATION MEMORY INDICATOR & CONTROLS
-# ==========================================
+# ------------------------------------------------------------------
+# Hero
+# ------------------------------------------------------------------
+st.markdown(f"""
+<div class="hero">
+    <h1>Ask your database anything.</h1>
+    <p>Write your question in plain English or Hindi. You get an immediate answer, full data rows, and verified SQL.</p>
+    <div class="source-line">
+        <span class="live"></span>
+        <span>Connected to <strong>{esc(str(active_name))}</strong></span>
+        <span class="dialect-badge">{esc(active_dialect)}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+# Quick questions
+# ------------------------------------------------------------------
+c1, c2, c3, c4 = st.columns(4)
+
+if current_source == "college":
+    chips = [
+        ("Student (Roll 5)", "Show student with roll number 5 and his marks"),
+        ("Top 3 Students", "Show top 3 students with highest marks"),
+        ("Computer Science", "List all students in Computer Science department"),
+        ("Subject Averages", "Show average marks for each subject"),
+    ]
+else:
+    t1 = tables_found[0] if tables_found else "table"
+    t2 = tables_found[1] if len(tables_found) > 1 else t1
+    chips = [
+        (f"Top rows: {t1[:12]}", f"Show top 5 records from {t1}"),
+        (f"Count: {t1[:12]}", f"Count the total number of records in {t1}"),
+        (f"Sample: {t2[:12]}", f"Show 5 sample rows from {t2}"),
+        ("Schema Overview", "What tables and columns exist in this database?"),
+    ]
+for col, (label, prompt) in zip((c1, c2, c3, c4), chips):
+    with col:
+        if st.button(label, width="stretch", key=f"chip_{label}"):
+            ask(prompt)
+
+# ------------------------------------------------------------------
+# Conversation context
+# ------------------------------------------------------------------
 if st.session_state["chat_history"]:
     col_mem, col_rst = st.columns([4, 1.2])
     with col_mem:
+        n = len(st.session_state["chat_history"])
         st.markdown(
-            f"<div style='font-size:0.83rem; color:#475569; padding: 6px 0 4px 6px;'>"
-            f"🧠 <strong>Conversation Context:</strong> <code>{len(st.session_state['chat_history'])} turn(s) active</code> &bull; "
-            f"You can ask follow-up questions (e.g. <em>'show their marks'</em>, <em>'filter by category'</em>)</div>",
-            unsafe_allow_html=True
+            f"<div class='small-muted' style='padding:8px 0 4px 6px; font-size:.85rem;'>"
+            f"Remembering {n} earlier turn{'s' if n != 1 else ''}, so you can follow up with things like "
+            f"<em>show their marks</em> or <em>only the top ten</em>.</div>",
+            unsafe_allow_html=True,
         )
     with col_rst:
-        if st.button("🧹 Reset Context", key="clear_ctx", use_container_width=True):
-            st.session_state["chat_history"] = []
-            st.session_state["last_result"] = None
-            st.session_state["query_input"] = ""
+        if st.button("Start fresh", key="clear_ctx", width="stretch"):
+            reset_conversation()
             agent = get_local_agent(db_manager=active_db)
             if agent:
                 agent.clear_memory()
             st.rerun()
 
-# ==========================================
-# TRANSLUCENT FLOATING SEARCH CAPSULE (Hover Glow & Voice)
-# ==========================================
-def on_query_enter():
-    val = st.session_state.get("main_query_text_input", "").strip()
-    if val:
-        st.session_state["query_input"] = val
+    with st.expander(f"Recent questions ({len(st.session_state['chat_history'])})", expanded=False):
+        for h_idx, h in enumerate(reversed(st.session_state["chat_history"])):
+            q_num = len(st.session_state["chat_history"]) - h_idx
+            q_text = h.get("user", "")
+            q_summary = h.get("summary", "")
+            hq1, hq2 = st.columns([4, 1.2])
+            with hq1:
+                st.markdown(f"**Q{q_num}:** {esc(q_text)}")
+                if q_summary:
+                    st.markdown(f"<div class='small-muted' style='margin-bottom:6px;'>{esc(q_summary)}</div>", unsafe_allow_html=True)
+            with hq2:
+                if st.button("↺ Ask again", key=f"reask_{h_idx}_{q_num}", width="stretch"):
+                    ask(q_text)
+            if h_idx < len(st.session_state["chat_history"]) - 1:
+                st.markdown("<hr style='margin:4px 0 8px 0; border:none; border-top:1px solid #e2e8f0;'>", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+# Search bar (type or dictate)
+# ------------------------------------------------------------------
+payload = query_bar(
+    prefill=st.session_state["query_input"],
+    placeholder=f"Ask about {active_name}, or tap the mic and say it",
+    key="sql_query_bar",
+    default=None,
+)
+if payload and payload.get("id") != st.session_state["last_bar_id"]:
+    st.session_state["last_bar_id"] = payload["id"]
+    st.session_state["query_input"] = payload["text"]
+    if payload.get("text", "").strip():
         st.session_state["auto_run"] = True
+    else:
+        st.session_state["auto_run"] = False
 
-if voice_input_available:
-    col_input, col_mic, col_btn = st.columns([4.2, 0.9, 0.9])
-else:
-    col_input, col_btn = st.columns([5, 1])
-    col_mic = None
-
-with col_input:
-    query_text = st.text_input(
-        label="Inquiry",
-        label_visibility="collapsed",
-        value=st.session_state["query_input"],
-        placeholder=f"Ask anything about {active_name}...",
-        key="main_query_text_input",
-        on_change=on_query_enter
-    )
-
-voice_spoken_text = None
-if col_mic:
-    with col_mic:
-        voice_spoken_text = speech_to_text(
-            language='en',
-            start_prompt="🎙️ Speak",
-            stop_prompt="⏹️ Done",
-            just_once=True,
-            use_container_width=True,
-            key="voice_recorder_widget"
-        )
-
-with col_btn:
-    submit_btn = st.button("Send ↗", use_container_width=True, key="main_send_btn")
-
-# If voice speech was recognized and is new:
-if voice_spoken_text and voice_spoken_text.strip() and voice_spoken_text.strip() != st.session_state.get("last_voice_query"):
-    st.session_state["last_voice_query"] = voice_spoken_text.strip()
-    st.session_state["query_input"] = voice_spoken_text.strip()
-    st.session_state["auto_run"] = True
-    st.rerun()
-
-# ==========================================
-# RESULTS DISPLAY & PERSISTENCE
-# ==========================================
-run_query = False
-active_query = ""
-
-if submit_btn and query_text.strip():
-    run_query = True
-    active_query = query_text.strip()
-elif st.session_state.get("auto_run", False) and st.session_state.get("query_input", "").strip():
-    run_query = True
-    active_query = st.session_state["query_input"].strip()
+# ------------------------------------------------------------------
+# Run query
+# ------------------------------------------------------------------
+if st.session_state.get("auto_run") and st.session_state["query_input"].strip():
     st.session_state["auto_run"] = False
-
-if run_query and active_query:
-    with st.spinner("Analyzing inquiry with conversation context..."):
+    active_query = st.session_state["query_input"].strip()
+    with st.spinner("Working on it..."):
+        import time
+        t0 = time.time()
         res = execute_agent_query(active_query, history=st.session_state["chat_history"], db_manager=active_db)
+        res["execution_time"] = round(time.time() - t0, 2)
         st.session_state["last_result"] = res
         if res.get("success"):
             st.session_state["chat_history"] = res.get("history", st.session_state["chat_history"])
 
+# ------------------------------------------------------------------
+# Result
+# ------------------------------------------------------------------
 result = st.session_state.get("last_result")
 if result:
     status = result.get("status")
-    answer = result.get("answer", "")
+    answer = result.get("answer", "") or ""
     sql = result.get("sql_query")
     data = result.get("data", [])
+    exec_time = result.get("execution_time")
 
     with st.container(border=True):
         if status == "out_of_scope":
-            st.warning(f"💡 {answer}")
+            st.warning(answer)
         elif status == "security_violation":
-            st.error(f"🛡️ {answer}")
+            st.error(f"🛡️ Guardrail Blocked: {answer}")
+            st.caption("Only safe, read-only queries (SELECT) are permitted. Table alterations or mutations are restricted.")
         elif not result.get("success"):
-            st.error(f"⚠️ {answer}")
+            st.error(answer)
         elif status == "schema_info":
-            # Luxury Architecture & Schema Overview
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, rgba(244,63,94,0.06), rgba(168,85,247,0.05)); border-left: 4px solid #f43f5e; border-radius: 14px; padding: 14px 18px; margin-bottom: 16px;">
-                <div style="display:flex; align-items:center; gap:8px; font-weight:700; color:#e11d48; font-size:0.95rem; margin-bottom:6px;">
-                    <span>📋 Database Architecture & Schema</span>
-                </div>
-                <div style="color:#0f172a; font-size:1.02rem; line-height:1.6; font-weight:500;">
-                    {answer}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Structured Visual Cards for each table
+            st.markdown(
+                f"<div class='answer-box'><div class='answer-label'>About this database</div>"
+                f"<div class='answer-text'>{esc(answer)}</div></div>",
+                unsafe_allow_html=True,
+            )
             tables_info = result.get("tables_info")
             if not tables_info:
                 try:
-                    inspector = inspect(active_db.engine)
-                    tables_info = [{"name": t, "columns": [c["name"] for c in inspector.get_columns(t)]} for t in active_db.get_table_names()]
+                    insp = sa_inspect(active_db.engine)
+                    tables_info = [{"name": t, "columns": [c["name"] for c in insp.get_columns(t)]} for t in active_db.get_table_names()]
                 except Exception:
                     tables_info = []
 
-            if tables_info:
-                st.markdown("<h4 style='color:#0f172a; margin-top:10px; margin-bottom:8px;'>🗂️ Discovered Tables & Columns</h4>", unsafe_allow_html=True)
-                for t_idx, t_data in enumerate(tables_info):
-                    t_name = t_data["name"]
-                    t_cols = t_data["columns"]
-                    
-                    with st.container(border=True):
-                        col_h1, col_h2 = st.columns([3, 1])
-                        with col_h1:
-                            st.markdown(f"<div style='font-weight:700; font-size:1.05rem; color:#0f172a;'>📦 <code>{t_name}</code></div>", unsafe_allow_html=True)
-                        with col_h2:
-                            st.markdown(f"<div style='text-align:right; font-size:0.82rem; color:#64748b; font-weight:600;'>{len(t_cols)} Columns</div>", unsafe_allow_html=True)
+            for t_idx, t_data in enumerate(tables_info or []):
+                t_name, t_cols = t_data["name"], t_data["columns"]
+                with st.container(border=True):
+                    h1, h2 = st.columns([3, 1])
+                    with h1:
+                        st.markdown(f"<div style='font-weight:700; font-size:1.05rem; color:#0f172a;'><code>{esc(str(t_name))}</code></div>", unsafe_allow_html=True)
+                    with h2:
+                        st.markdown(f"<div class='small-muted' style='text-align:right; font-weight:600;'>{len(t_cols)} columns</div>", unsafe_allow_html=True)
+                    chips_html = "".join(f"<span class='col-chip'>{esc(str(c))}</span>" for c in t_cols)
+                    st.markdown(f"<div class='schema-col-wrap'>{chips_html}</div>", unsafe_allow_html=True)
 
-                        chips_html = "".join([f"<span class='col-chip'>🏷️ {c}</span>" for c in t_cols])
-                        st.markdown(f"<div class='schema-col-wrap'>{chips_html}</div>", unsafe_allow_html=True)
-
-                        # Quick One-Click Interactive Inquiries
-                        st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-                        st.markdown("<div style='font-size:0.8rem; font-weight:700; color:#475569; margin-bottom:6px;'>⚡ Quick One-Click Inquiries:</div>", unsafe_allow_html=True)
-                        
-                        sq1_col, sq2_col, sq3_col = st.columns(3)
-                        with sq1_col:
-                            if st.button(f"🔍 Top 5 Records", key=f"sq_top_{t_name}_{t_idx}", use_container_width=True):
-                                st.session_state["query_input"] = f"Show top 5 records from {t_name}"
-                                st.session_state["auto_run"] = True
-                                st.rerun()
-                        with sq2_col:
-                            num_cols = [c for c in t_cols if any(k in c.lower() for k in ["price", "cost", "sold", "marks", "stock", "quantity", "amount", "salary"])]
-                            target_num = num_cols[0] if num_cols else t_cols[0]
-                            if st.button(f"📈 Highest {target_num[:10]}", key=f"sq_num_{t_name}_{t_idx}", use_container_width=True):
-                                st.session_state["query_input"] = f"Show top 5 records with highest {target_num} in {t_name}"
-                                st.session_state["auto_run"] = True
-                                st.rerun()
-                        with sq3_col:
-                            cat_cols = [c for c in t_cols if any(k in c.lower() for k in ["cat", "dept", "status", "type", "supplier", "gender"])]
-                            if cat_cols:
-                                target_cat = cat_cols[0]
-                                if st.button(f"📊 By {target_cat[:10]}", key=f"sq_cat_{t_name}_{t_idx}", use_container_width=True):
-                                    st.session_state["query_input"] = f"Count total records grouped by {target_cat} in {t_name}"
-                                    st.session_state["auto_run"] = True
-                                    st.rerun()
-                            else:
-                                if st.button(f"🔢 Total Count", key=f"sq_cnt_{t_name}_{t_idx}", use_container_width=True):
-                                    st.session_state["query_input"] = f"Count total records in {t_name}"
-                                    st.session_state["auto_run"] = True
-                                    st.rerun()
+                    s1, s2, s3 = st.columns(3)
+                    with s1:
+                        if st.button("First 5 rows", key=f"sq_top_{t_name}_{t_idx}", width="stretch"):
+                            ask(f"Show top 5 records from {t_name}")
+                    with s2:
+                        num_cols = [c for c in t_cols if any(k in c.lower() for k in ["price", "cost", "sold", "marks", "stock", "quantity", "amount", "salary"])]
+                        if num_cols:
+                            if st.button(f"Highest {num_cols[0][:10]}", key=f"sq_num_{t_name}_{t_idx}", width="stretch"):
+                                ask(f"Show top 5 records with highest {num_cols[0]} in {t_name}")
+                    with s3:
+                        cat_cols = [c for c in t_cols if any(k in c.lower() for k in ["cat", "dept", "status", "type", "supplier", "gender"])]
+                        if cat_cols:
+                            if st.button(f"Group by {cat_cols[0][:10]}", key=f"sq_cat_{t_name}_{t_idx}", width="stretch"):
+                                ask(f"Count total records grouped by {cat_cols[0]} in {t_name}")
+                        elif st.button("Row count", key=f"sq_cnt_{t_name}_{t_idx}", width="stretch"):
+                            ask(f"Count total records in {t_name}")
         else:
-            # Luxury Insight Card for Data Queries
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, rgba(244,63,94,0.06), rgba(236,72,153,0.04)); border-left: 4px solid #f43f5e; border-radius: 14px; padding: 14px 18px; margin-bottom: 16px;">
-                <div style="display:flex; align-items:center; gap:6px; font-weight:700; color:#e11d48; font-size:0.92rem; margin-bottom:4px;">
-                    <span>✦ Insight</span>
-                </div>
-                <div style="color: #0f172a; font-size: 1.02rem; line-height: 1.5; font-weight: 500;">
-                    {answer}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Expandable SQL Code
-            if sql:
-                with st.expander("🛠️ View Verified SQL Query", expanded=False):
-                    st.code(sql, language="sql")
+            # 1. Answer Box
+            meta_pill = f" <span style='font-size:.78rem; font-weight:600; color:#64748b; margin-left:8px;'>• {exec_time}s</span>" if exec_time else ""
+            st.markdown(
+                f"<div class='answer-box'><div class='answer-label'>Answer{meta_pill}</div>"
+                f"<div class='answer-text'>{esc(answer)}</div></div>",
+                unsafe_allow_html=True,
+            )
 
-            # Plain-English Step-by-Step Logic Breakdown
-            logic_steps = result.get("logic_steps") or []
-            if logic_steps:
-                with st.expander("📖 Step-by-Step Query Logic Breakdown (Plain English)", expanded=True):
-                    st.markdown("<div style='font-size:0.83rem; color:#64748b; margin-bottom:8px;'>An executive plain-English breakdown explaining the query mechanics:</div>", unsafe_allow_html=True)
-                    for step_text in logic_steps:
-                        st.markdown(
-                            f"<div style='background:rgba(241, 245, 249, 0.7); border-left: 3px solid #6366f1; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 0.9rem; color: #0f172a; font-weight: 500;'>"
-                            f"{step_text}"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-                    
-            # Tabular View & Data Export
+            # 2. Results Data Table (Directly below Answer)
             if data:
-                st.markdown("#### 📋 Data Records")
                 df = pd.DataFrame(data)
-                st.dataframe(df, use_container_width=True)
+                row_label = f"{len(df):,} row{'s' if len(df) != 1 else ''}"
+                st.markdown(f"#### Results ({row_label})")
+                st.dataframe(df, width="stretch")
 
-                # Export buttons
-                col_exp1, col_exp2 = st.columns([1, 1])
-                with col_exp1:
+                e1, e2 = st.columns(2)
+                with e1:
                     st.download_button(
-                        label="📥 Download as CSV",
-                        data=df.to_csv(index=False).encode("utf-8"),
-                        file_name="query_results.csv",
-                        mime="text/csv",
-                        use_container_width=True
+                        "Download CSV", data=df.to_csv(index=False).encode("utf-8"),
+                        file_name="query_results.csv", mime="text/csv", width="stretch",
                     )
-                with col_exp2:
+                with e2:
                     try:
-                        excel_buf = io.BytesIO()
-                        df.to_excel(excel_buf, index=False, engine="openpyxl")
+                        buf = io.BytesIO()
+                        df.to_excel(buf, index=False, engine="openpyxl")
                         st.download_button(
-                            label="📊 Download as Excel (.xlsx)",
-                            data=excel_buf.getvalue(),
-                            file_name="query_results.xlsx",
+                            "Download Excel", data=buf.getvalue(), file_name="query_results.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
+                            width="stretch",
                         )
                     except Exception:
                         pass
+            elif result.get("success"):
+                st.info("The query ran fine but returned no rows. Try loosening a filter.")
+
+            # 3. Bottom Expanders (Closed by default - exactly per user instruction)
+            if sql:
+                with st.expander("Show the SQL", expanded=False):
+                    formatted_sql = format_sql(sql, dialect=active_dialect)
+                    st.code(formatted_sql, language="sql")
+
+            logic_steps = result.get("logic_steps") or []
+            if logic_steps:
+                with st.expander("How this query works", expanded=False):
+                    for step_text in logic_steps:
+                        st.markdown(f"<div class='step-line'>{esc(str(step_text))}</div>", unsafe_allow_html=True)

@@ -29,6 +29,7 @@ Thumbs.db
 docs/PROJECT_AUDIT_AND_FIXES.md
 docs/*.html
 docs/*.pdf
+AGENTS.md
 
 # Streamlit config
 .streamlit/secrets.toml

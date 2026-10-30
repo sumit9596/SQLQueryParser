@@ -1,0 +1,238 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --rose:#f43f5e; --rose-deep:#e11d48; --ink:#0f172a; --muted:#64748b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:transparent; font-family:'Figtree',-apple-system,BlinkMacSystemFont,sans-serif; }
+  body { padding:6px 8px 26px; }
+
+  .bar {
+    display:flex; align-items:center; gap:8px;
+    background:rgba(255,255,255,.88);
+    border:1.5px solid rgba(255,255,255,.95);
+    border-radius:30px; padding:8px 8px 8px 22px;
+    box-shadow:0 12px 30px rgba(148,163,184,.14), 0 2px 6px rgba(0,0,0,.03);
+    transition:border-color .2s, box-shadow .2s, background .2s;
+  }
+  .bar:hover, .bar:focus-within {
+    background:#fff; border-color:rgba(244,63,94,.45);
+    box-shadow:0 16px 40px rgba(244,63,94,.16), 0 0 0 3px rgba(244,63,94,.09);
+  }
+  .bar.listening {
+    background:#fff; border-color:var(--rose);
+    box-shadow:0 16px 40px rgba(244,63,94,.2), 0 0 0 4px rgba(244,63,94,.1);
+  }
+
+  textarea {
+    flex:1; min-width:0; resize:none; border:none; outline:none; background:transparent;
+    font:500 1.04rem/1.45 'Figtree',sans-serif; color:var(--ink); caret-color:var(--rose);
+    padding:9px 0; height:42px; max-height:120px; overflow-y:auto;
+  }
+  textarea::placeholder { color:#94a3b8; font-weight:400; }
+
+  button { font-family:inherit; cursor:pointer; border:none; background:none; }
+  button:focus-visible { outline:2px solid var(--rose); outline-offset:2px; }
+
+  .icon {
+    width:42px; height:42px; border-radius:50%; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    color:#475569; background:#f1f5f9; transition:background .15s, color .15s, transform .15s;
+  }
+  .icon:hover { background:#e2e8f0; color:var(--ink); }
+  .icon svg { width:19px; height:19px; }
+  .icon.confirm { background:var(--rose); color:#fff; box-shadow:0 6px 16px rgba(244,63,94,.35); }
+  .icon.confirm:hover { background:var(--rose-deep); color:#fff; transform:scale(1.04); }
+
+  .lang {
+    flex:none; font-size:.78rem; font-weight:700; color:#475569;
+    padding:6px 10px; border-radius:999px; background:transparent; border:1px solid #e2e8f0;
+  }
+  .lang:hover { background:#f8fafc; color:var(--ink); }
+
+  .send {
+    flex:none; height:42px; padding:0 22px; border-radius:999px;
+    background:linear-gradient(135deg,#f43f5e,#ec4899); color:#fff;
+    font-weight:700; font-size:.92rem; box-shadow:0 6px 18px rgba(244,63,94,.32);
+    transition:transform .15s, box-shadow .15s, opacity .15s;
+  }
+  .send:hover { transform:translateY(-1px); box-shadow:0 10px 22px rgba(244,63,94,.42); }
+  .send:disabled { opacity:.45; cursor:default; transform:none; box-shadow:none; }
+
+  /* live level bars, only while dictating */
+  .wave { display:none; align-items:center; gap:3px; height:22px; flex:none; margin-left:-6px; }
+  .wave i { width:3px; height:100%; border-radius:3px; background:var(--rose); transform-origin:center;
+            animation:lvl 1s ease-in-out infinite; }
+  .wave i:nth-child(2){animation-delay:.15s} .wave i:nth-child(3){animation-delay:.3s}
+  .wave i:nth-child(4){animation-delay:.12s} .wave i:nth-child(5){animation-delay:.27s}
+  @keyframes lvl { 0%,100%{transform:scaleY(.25)} 50%{transform:scaleY(1)} }
+  @media (prefers-reduced-motion: reduce) { .wave i { animation:none; transform:scaleY(.6); } }
+
+  .listening .wave { display:flex; }
+  .listening .send, .listening #mic, .listening .lang, .listening #clear { display:none; }
+  .bar:not(.listening) #cancel, .bar:not(.listening) #ok { display:none; }
+
+  .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
+  .hint.err { color:var(--rose-deep); }
+
+  @media (max-width:520px) { .lang { display:none; } .send { padding:0 16px; } }
+</style></head>
+<body>
+  <div class="bar" id="bar">
+    <div class="wave" id="wave"><i></i><i></i><i></i><i></i><i></i></div>
+    <textarea id="q" rows="1" spellcheck="false"></textarea>
+    <button class="icon" id="clear" type="button" title="Clear text" aria-label="Clear text" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+    <button class="lang" id="lang" type="button" title="Dictation language">EN</button>
+    <button class="icon" id="mic" type="button" title="Dictate" aria-label="Dictate">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/></svg>
+    </button>
+    <button class="icon" id="cancel" type="button" title="Discard dictation (Esc)" aria-label="Discard dictation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <button class="icon confirm" id="ok" type="button" title="Done, keep this text (Enter)" aria-label="Done">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+    </button>
+    <button class="send" id="send" type="button">Send</button>
+  </div>
+  <div class="hint" id="hint"></div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const q = $('q'), bar = $('bar'), hint = $('hint'), mic = $('mic'), clearBtn = $('clear'), langBtn = $('lang'), sendBtn = $('send');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let lastPrefill = null, rec = null, want = false, base = '', committed = '', lang = 'en-IN';
+
+  function post(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), '*');
+  }
+  function fit() { post('streamlit:setFrameHeight', { height: document.documentElement.scrollHeight }); }
+  function autosize() {
+    q.style.height = 'auto';
+    q.style.height = Math.max(42, Math.min(q.scrollHeight, 120)) + 'px';
+    sendBtn.disabled = !q.value.trim();
+    if (clearBtn) {
+      clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';
+    }
+    fit();
+  }
+  function setHint(t, err) { hint.textContent = t || ''; hint.className = 'hint' + (err ? ' err' : ''); }
+
+  function submit() {
+    const t = q.value.trim();
+    if (!t) return;
+    post('streamlit:setComponentValue', {
+      value: { text: t, id: Date.now() + '-' + Math.random().toString(36).slice(2) },
+      dataType: 'json'
+    });
+  }
+
+  function show(interim) {
+    q.value = [base, committed.trim(), interim.trim()].filter(Boolean).join(' ');
+    autosize();
+    q.scrollTop = q.scrollHeight;
+  }
+
+  function startListening() {
+    if (!SR) {
+      setHint('Voice input requires a Chromium browser (Chrome, Edge, Brave).', true);
+      return;
+    }
+    if (want) return;
+    base = q.value.trim(); committed = ''; want = true;
+    bar.classList.add('listening');
+    setHint('Listening. Speak your question, then tap the tick when you are done.');
+    rec = new SR();
+    rec.lang = lang; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) committed += r[0].transcript + ' '; else interim += r[0].transcript;
+      }
+      show(interim);
+    };
+    rec.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        stopListening(false);
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const isHttps = window.location.protocol === 'https:';
+        if (!isLocal && !isHttps) {
+          setHint('Microphone requires localhost or HTTPS. Browsers block speech dictation on non-secure Wi-Fi IP addresses.', true);
+        } else {
+          setHint('Microphone is blocked. Allow mic access for this site in the browser address bar.', true);
+        }
+      } else if (e.error === 'audio-capture') {
+        stopListening(false);
+        setHint('No microphone found.', true);
+      } else if (e.error === 'network') {
+        stopListening(false);
+        setHint('Speech service needs an internet connection.', true);
+      }
+    };
+    rec.onend = () => { if (want) { try { rec.start(); } catch (_) {} } };
+    try { rec.start(); } catch (_) {}
+    q.focus();
+  }
+
+  function stopListening(keep) {
+    want = false;
+    if (rec) { rec.onresult = null; rec.onend = null; try { rec.stop(); } catch (_) {} }
+    bar.classList.remove('listening');
+    if (!keep) { q.value = base; }
+    if (keep) setHint('');
+    else if (!hint.classList.contains('err')) setHint('');
+    autosize();
+    q.focus();
+  }
+
+  mic.addEventListener('click', startListening);
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      q.value = '';
+      base = '';
+      committed = '';
+      autosize();
+      q.focus();
+      post('streamlit:setComponentValue', {
+        value: { text: '', id: 'clear-' + Date.now() },
+        dataType: 'json'
+      });
+    });
+  }
+  $('ok').addEventListener('click', () => stopListening(true));
+  $('cancel').addEventListener('click', () => stopListening(false));
+  sendBtn.addEventListener('click', submit);
+  langBtn.addEventListener('click', () => {
+    lang = lang === 'en-IN' ? 'hi-IN' : 'en-IN';
+    langBtn.textContent = lang === 'en-IN' ? 'EN' : 'हिं';
+  });
+  q.addEventListener('input', autosize);
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && want) { e.preventDefault(); stopListening(false); }
+    else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (want) stopListening(true); else submit();
+    }
+  });
+
+  window.addEventListener('message', ev => {
+    if (!ev.data || ev.data.type !== 'streamlit:render') return;
+    const a = ev.data.args || {};
+    q.placeholder = a.placeholder || 'Ask a question';
+    if (a.prefill !== lastPrefill && !want) { q.value = a.prefill || ''; }
+    lastPrefill = a.prefill;
+    if (!SR) {
+      mic.title = 'Voice recognition requires Chrome, Edge, or Brave browser';
+      mic.style.opacity = '0.4';
+      mic.style.cursor = 'not-allowed';
+      langBtn.style.display = 'none';
+    }
+    autosize();
+  });
+  new ResizeObserver(fit).observe(document.body);
+  post('streamlit:componentReady', { apiVersion: 1 });
+  autosize();
+</script>
+</body></html>
