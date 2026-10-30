@@ -625,9 +625,18 @@ def render_database_source_selector(key_prefix: str = "main"):
                 if not m_db.strip():
                     st.error("Please provide a database name.")
                 else:
+                    # Auto-clean accidental paste errors (e.g. 'localhostgateway01...' or 'https://')
+                    clean_host = m_host.strip()
+                    if clean_host.startswith("localhost") and len(clean_host) > len("localhost") and not clean_host.startswith("localhost:"):
+                        clean_host = clean_host[len("localhost"):].strip()
+                    if clean_host.startswith("https://"):
+                        clean_host = clean_host[len("https://"):].strip()
+                    if clean_host.startswith("http://"):
+                        clean_host = clean_host[len("http://"):].strip()
+
                     with st.spinner(f"Connecting to MySQL '{m_db}'..."):
                         ok, mgr, msg = create_mysql_db_manager(
-                            host=m_host.strip(),
+                            host=clean_host,
                             port=int(m_port),
                             user=m_user.strip(),
                             password=m_pass,
