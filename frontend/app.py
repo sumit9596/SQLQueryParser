@@ -58,6 +58,12 @@ try:
 except Exception:
     local_agent_available = False
 
+try:
+    from streamlit_mic_recorder import speech_to_text
+    voice_input_available = True
+except Exception:
+    voice_input_available = False
+
 def get_local_agent(db_manager: DatabaseManager = None):
     """Returns a freshly reloaded SQLAgent instance with active db_manager."""
     if local_agent_available:
@@ -794,19 +800,51 @@ if st.session_state["chat_history"]:
             st.rerun()
 
 # ==========================================
-# TRANSLUCENT FLOATING SEARCH CAPSULE (Hover Glow)
+# TRANSLUCENT FLOATING SEARCH CAPSULE (Hover Glow & Voice)
 # ==========================================
-with st.form("search_form", clear_on_submit=False):
+def on_query_enter():
+    val = st.session_state.get("main_query_text_input", "").strip()
+    if val:
+        st.session_state["query_input"] = val
+        st.session_state["auto_run"] = True
+
+if voice_input_available:
+    col_input, col_mic, col_btn = st.columns([4.2, 0.9, 0.9])
+else:
     col_input, col_btn = st.columns([5, 1])
-    with col_input:
-        query_text = st.text_input(
-            label="Inquiry",
-            label_visibility="collapsed",
-            value=st.session_state["query_input"],
-            placeholder=f"Ask anything about {active_name}..."
+    col_mic = None
+
+with col_input:
+    query_text = st.text_input(
+        label="Inquiry",
+        label_visibility="collapsed",
+        value=st.session_state["query_input"],
+        placeholder=f"Ask anything about {active_name}...",
+        key="main_query_text_input",
+        on_change=on_query_enter
+    )
+
+voice_spoken_text = None
+if col_mic:
+    with col_mic:
+        voice_spoken_text = speech_to_text(
+            language='en',
+            start_prompt="🎙️ Speak",
+            stop_prompt="⏹️ Done",
+            just_once=True,
+            use_container_width=True,
+            key="voice_recorder_widget"
         )
-    with col_btn:
-        submit_btn = st.form_submit_button("Send ↗", use_container_width=True)
+
+with col_btn:
+    submit_btn = st.button("Send ↗", use_container_width=True, key="main_send_btn")
+
+# If voice speech was recognized and is new:
+if voice_spoken_text and voice_spoken_text.strip() and voice_spoken_text.strip() != st.session_state.get("last_voice_query"):
+    st.session_state["last_voice_query"] = voice_spoken_text.strip()
+    st.session_state["query_input"] = voice_spoken_text.strip()
+    st.session_state["auto_run"] = True
+    st.rerun()
 
 # ==========================================
 # RESULTS DISPLAY & PERSISTENCE
@@ -928,6 +966,19 @@ if result:
             if sql:
                 with st.expander("🛠️ View Verified SQL Query", expanded=False):
                     st.code(sql, language="sql")
+
+            # Plain-English Step-by-Step Logic Breakdown
+            logic_steps = result.get("logic_steps") or []
+            if logic_steps:
+                with st.expander("📖 Step-by-Step Query Logic Breakdown (Plain English)", expanded=True):
+                    st.markdown("<div style='font-size:0.83rem; color:#64748b; margin-bottom:8px;'>An executive plain-English breakdown explaining the query mechanics:</div>", unsafe_allow_html=True)
+                    for step_text in logic_steps:
+                        st.markdown(
+                            f"<div style='background:rgba(241, 245, 249, 0.7); border-left: 3px solid #6366f1; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 0.9rem; color: #0f172a; font-weight: 500;'>"
+                            f"{step_text}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
                     
             # Tabular View & Data Export
             if data:

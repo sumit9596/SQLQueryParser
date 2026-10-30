@@ -24,6 +24,7 @@ class QueryResponse(BaseModel):
     row_count: int = 0
     logs: List[StepLog] = []
     history: Optional[List[Dict[str, Any]]] = []
+    logic_steps: Optional[List[str]] = []
 
 class SchemaResponse(BaseModel):
     dialect: str

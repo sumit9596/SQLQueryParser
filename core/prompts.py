@@ -45,7 +45,13 @@ Classify the inquiry into exactly ONE of the following 3 categories:
   "category": "DATA_QUERY" | "SCHEMA_INFO" | "OUT_OF_SCOPE",
   "sql_query": "SELECT ... (or empty string if not DATA_QUERY)",
   "direct_answer": "Direct answer if SCHEMA_INFO or OUT_OF_SCOPE, else empty string.",
-  "explanation": "Concise 1-sentence explanation of what the query retrieves."
+  "explanation": "Concise 1-sentence explanation in clear English of what the query retrieves.",
+  "logic_steps": [
+    "Step 1: Description of tables joined or queried",
+    "Step 2: Description of filters and conditions applied",
+    "Step 3: Description of aggregations or computations",
+    "Step 4: Description of sorting and limit"
+  ]
 }}
 """
 
@@ -68,11 +74,16 @@ Your job is to analyze the database error and output a corrected SQL query.
 1. Identify why the error occurred (e.g., invalid column name, wrong table alias, ambiguous column).
 2. Fix the query while adhering strictly to the schema.
 3. Keep the query strictly read-only (SELECT only).
+4. Provide plain-English step-by-step logic breakdown in logic_steps.
 
 ### OUTPUT FORMAT (Strict JSON only, no markdown backticks):
 {{
   "corrected_sql": "SELECT ...",
-  "fix_summary": "Concise explanation of what was corrected."
+  "fix_summary": "Concise explanation in clear English of what was corrected.",
+  "logic_steps": [
+    "Step 1...",
+    "Step 2..."
+  ]
 }}
 """
 

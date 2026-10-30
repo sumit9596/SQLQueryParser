@@ -10,6 +10,7 @@ Orchestrates the complete pipeline with Single-Pass Unified Intent & SQL Synthes
 """
 
 import json
+import re
 from typing import Dict, Any, Optional, List
 
 from sqlalchemy import inspect
@@ -21,6 +22,48 @@ from core.prompts import (
     format_self_correction_prompt,
     format_explainer_prompt
 )
+
+def generate_fallback_logic_steps(sql_query: str) -> List[str]:
+    """Generates clean, professional English logic breakdown from SQL query structure."""
+    if not sql_query:
+        return []
+    
+    steps = []
+    sql_upper = sql_query.upper()
+    
+    # 1. Tables & Joins
+    if " JOIN " in sql_upper:
+        tables = re.findall(r"(?:FROM|JOIN)\s+([`\"\w]+)", sql_query, re.IGNORECASE)
+        clean_tables = [t.strip('`"') for t in tables if t.upper() not in ["SELECT", "WHERE"]]
+        steps.append(f"🔗 Connects tables: {', '.join(clean_tables)} using relational foreign keys.")
+    else:
+        from_match = re.search(r"FROM\s+([`\"\w]+)", sql_query, re.IGNORECASE)
+        t_name = from_match.group(1).strip('`"') if from_match else "target table"
+        steps.append(f"📦 Scans records from the '{t_name}' table.")
+
+    # 2. Filters / Where
+    if " WHERE " in sql_upper:
+        steps.append("🔍 Applies filtering criteria to isolate target matching records.")
+
+    # 3. Aggregations / Grouping
+    if any(fn in sql_upper for fn in ["COUNT(", "AVG(", "SUM(", "MIN(", "MAX(", "GROUP BY"]):
+        steps.append("🧮 Computes analytical aggregate metrics and groups calculated values.")
+
+    # 4. Sorting / Ordering
+    if " ORDER BY " in sql_upper:
+        if "DESC" in sql_upper:
+            steps.append("⬇️ Sorts results in descending order to surface top values.")
+        else:
+            steps.append("⬆️ Sorts results in ascending order.")
+
+    # 5. Limit
+    if " LIMIT " in sql_upper:
+        lim_match = re.search(r"LIMIT\s+(\d+)", sql_query, re.IGNORECASE)
+        lim_num = lim_match.group(1) if lim_match else "specified"
+        steps.append(f"🛑 Restricts output to top {lim_num} records.")
+
+    return steps
+
 
 class SQLAgent:
     def __init__(
@@ -78,17 +121,22 @@ class SQLAgent:
             history=effective_history
         )
         
+        logic_steps = []
         try:
             llm_res = call_llm(prompt, expect_json=True)
             category = llm_res.get("category", "DATA_QUERY") or "DATA_QUERY"
             direct_answer = (llm_res.get("direct_answer") or "").strip()
             sql_query = (llm_res.get("sql_query") or "").strip()
             explanation = (llm_res.get("explanation") or "").strip()
+            raw_steps = llm_res.get("logic_steps")
+            if isinstance(raw_steps, list):
+                logic_steps = [str(s).strip() for s in raw_steps if str(s).strip()]
         except Exception as e:
             category = "DATA_QUERY"
             direct_answer = ""
             sql_query = ""
             explanation = str(e)
+            logic_steps = []
 
         # 1A. Out of Scope Check
         if category == "OUT_OF_SCOPE":
@@ -202,6 +250,8 @@ class SQLAgent:
             try:
                 heal_res = call_llm(heal_prompt, expect_json=True, use_cache=False)
                 corrected_sql = (heal_res.get("corrected_sql") or "").strip()
+                if heal_res.get("logic_steps") and isinstance(heal_res["logic_steps"], list):
+                    logic_steps = [str(s).strip() for s in heal_res["logic_steps"] if str(s).strip()]
                 
                 is_safe, validated_heal_sql = validate_sql_query(corrected_sql, dialect=dialect)
                 if not is_safe:
@@ -288,6 +338,9 @@ class SQLAgent:
         if len(effective_history) > self.max_memory_turns:
             effective_history.pop(0)
 
+        if not logic_steps:
+            logic_steps = generate_fallback_logic_steps(current_sql)
+
         return {
             "success": True,
             "status": "success",
@@ -297,7 +350,8 @@ class SQLAgent:
             "data": exec_result["rows"],
             "row_count": row_count,
             "logs": logs,
-            "history": effective_history
+            "history": effective_history,
+            "logic_steps": logic_steps
         }
 
 if __name__ == "__main__":
