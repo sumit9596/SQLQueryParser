@@ -1,0 +1,32 @@
+# Environment and Secret Variables
+.env
+.env.local
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+data/sessions/
+
+# OS / Editor Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Internal Audit / Notes (Not for public repo)
+docs/PROJECT_AUDIT_AND_FIXES.md
+
+# Streamlit config
+.streamlit/secrets.toml
