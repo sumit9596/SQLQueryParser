@@ -27,6 +27,8 @@ Thumbs.db
 
 # Internal Audit / Notes (Not for public repo)
 docs/PROJECT_AUDIT_AND_FIXES.md
+docs/*.html
+docs/*.pdf
 
 # Streamlit config
 .streamlit/secrets.toml
