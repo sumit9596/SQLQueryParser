@@ -28,6 +28,14 @@ DEFAULT_DB_PATH = BASE_DIR / "data" / "college.db"
 SESSIONS_DIR = BASE_DIR / "data" / "sessions"
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Auto-seed sample college database if missing (essential for cloud deployment)
+if not DEFAULT_DB_PATH.exists():
+    try:
+        from data.seed_db import init_database
+        init_database()
+    except Exception as _seed_err:
+        print(f"Notice: Auto-seeding default database skipped: {_seed_err}")
+
 # Default Database URL
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()}")
 

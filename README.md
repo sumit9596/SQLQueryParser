@@ -90,6 +90,23 @@ streamlit run frontend/app.py
 
 ---
 
+## 🌐 Cloud Deployment Guide (Streamlit Community Cloud)
+
+1. **Repository Settings**:
+   * **App file path:** `frontend/app.py`
+   * **Python version:** `3.10+` / `3.11` / `3.12` / `3.14`
+2. **Secrets / Environment Variables**:
+   In your Streamlit Cloud App Settings $\rightarrow$ **Secrets**, add:
+   ```toml
+   GEMINI_API_KEY = "your_actual_gemini_api_key_here"
+   LLM_MODEL = "gemini-3.1-flash-lite"
+   ```
+3. **Database**:
+   * The sample college SQLite database is auto-seeded on first launch.
+   * Users can upload their own CSV/Excel files or connect to remote MySQL live from the UI.
+
+---
+
 ## 📁 Project Structure
 
 ```
