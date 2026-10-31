@@ -50,9 +50,12 @@ try:
     import core.validator
     import core.agent
 
-    if os.getenv("DEV_RELOAD") == "1":
+    if not hasattr(core.database, "parse_pasted_data") or os.getenv("DEV_RELOAD") == "1":
         for _m in (core.prompts, core.database, core.validator, core.agent):
-            importlib.reload(_m)
+            try:
+                importlib.reload(_m)
+            except Exception:
+                pass
 
     from core.agent import SQLAgent
     from core.database import (
