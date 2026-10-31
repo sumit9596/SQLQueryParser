@@ -5,13 +5,13 @@
   :root { --rose:#f43f5e; --rose-deep:#e11d48; --ink:#0f172a; --muted:#64748b; }
   * { box-sizing:border-box; }
   html,body { margin:0; background:transparent; font-family:'Figtree',-apple-system,BlinkMacSystemFont,sans-serif; }
-  body { padding:6px 8px 26px; }
+  body { padding:8px 8px 24px; }
 
   .bar {
     display:flex; align-items:center; gap:8px;
     background:rgba(255,255,255,.88);
     border:1.5px solid rgba(255,255,255,.95);
-    border-radius:30px; padding:8px 8px 8px 22px;
+    border-radius:30px; padding:10px 10px 10px 24px;
     box-shadow:0 12px 30px rgba(148,163,184,.14), 0 2px 6px rgba(0,0,0,.03);
     transition:border-color .2s, box-shadow .2s, background .2s;
   }
@@ -75,9 +75,21 @@
   .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
   .hint.err { color:var(--rose-deep); }
 
-  @media (max-width:520px) {
-    .lang { padding:4px 8px; font-size:.72rem; }
-    .send { padding:0 14px; font-size:.86rem; }
+  @media (max-width:600px) {
+    body { padding:4px 2px 16px; }
+    .bar { padding:6px 6px 6px 14px; border-radius:24px; gap:5px; }
+    textarea {
+      font-size: 0.88rem !important;
+      line-height: 1.35 !important;
+      padding: 6px 0 !important;
+      height: 34px !important;
+    }
+    textarea::placeholder { font-size: 0.82rem !important; }
+    .icon { width:34px; height:34px; }
+    .icon svg { width:16px; height:16px; }
+    .lang { padding:4px 7px; font-size:.68rem; }
+    .send { height:34px; padding:0 12px; font-size:.82rem; }
+    .hint { font-size:.76rem; margin:6px 0 0 12px; }
   }
 </style></head>
 <body>
@@ -113,7 +125,8 @@
   function fit() { post('streamlit:setFrameHeight', { height: document.documentElement.scrollHeight }); }
   function autosize() {
     q.style.height = 'auto';
-    q.style.height = Math.max(42, Math.min(q.scrollHeight, 120)) + 'px';
+    const minH = window.innerWidth <= 600 ? 34 : 42;
+    q.style.height = Math.max(minH, Math.min(q.scrollHeight, 120)) + 'px';
     sendBtn.disabled = !q.value.trim();
     if (clearBtn) {
       clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';

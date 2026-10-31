@@ -165,13 +165,13 @@ VOICE_BAR_HTML = r"""<!doctype html>
   :root { --rose:#f43f5e; --rose-deep:#e11d48; --ink:#0f172a; --muted:#64748b; }
   * { box-sizing:border-box; }
   html,body { margin:0; background:transparent; font-family:'Figtree',-apple-system,BlinkMacSystemFont,sans-serif; }
-  body { padding:6px 8px 26px; }
+  body { padding:8px 8px 24px; }
 
   .bar {
     display:flex; align-items:center; gap:8px;
     background:rgba(255,255,255,.88);
     border:1.5px solid rgba(255,255,255,.95);
-    border-radius:30px; padding:8px 8px 8px 22px;
+    border-radius:30px; padding:10px 10px 10px 24px;
     box-shadow:0 12px 30px rgba(148,163,184,.14), 0 2px 6px rgba(0,0,0,.03);
     transition:border-color .2s, box-shadow .2s, background .2s;
   }
@@ -235,9 +235,21 @@ VOICE_BAR_HTML = r"""<!doctype html>
   .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
   .hint.err { color:var(--rose-deep); }
 
-  @media (max-width:520px) {
-    .lang { padding:4px 8px; font-size:.72rem; }
-    .send { padding:0 14px; font-size:.86rem; }
+  @media (max-width:600px) {
+    body { padding:4px 2px 16px; }
+    .bar { padding:6px 6px 6px 14px; border-radius:24px; gap:5px; }
+    textarea {
+      font-size: 0.88rem !important;
+      line-height: 1.35 !important;
+      padding: 6px 0 !important;
+      height: 34px !important;
+    }
+    textarea::placeholder { font-size: 0.82rem !important; }
+    .icon { width:34px; height:34px; }
+    .icon svg { width:16px; height:16px; }
+    .lang { padding:4px 7px; font-size:.68rem; }
+    .send { height:34px; padding:0 12px; font-size:.82rem; }
+    .hint { font-size:.76rem; margin:6px 0 0 12px; }
   }
 </style></head>
 <body>
@@ -273,7 +285,8 @@ VOICE_BAR_HTML = r"""<!doctype html>
   function fit() { post('streamlit:setFrameHeight', { height: document.documentElement.scrollHeight }); }
   function autosize() {
     q.style.height = 'auto';
-    q.style.height = Math.max(42, Math.min(q.scrollHeight, 120)) + 'px';
+    const minH = window.innerWidth <= 600 ? 34 : 42;
+    q.style.height = Math.max(minH, Math.min(q.scrollHeight, 120)) + 'px';
     sendBtn.disabled = !q.value.trim();
     if (clearBtn) {
       clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';
@@ -415,7 +428,7 @@ query_bar = components.declare_component("sql_query_bar", path=str(_COMP_DIR))
 # ------------------------------------------------------------------
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
 
 :root, [data-testid="stAppViewContainer"], html, body {
     color-scheme: light !important;
@@ -445,6 +458,9 @@ header[data-testid="stHeader"] { background: transparent !important; color: #0f1
 .block-container { max-width: 920px !important; padding-top: 1.8rem !important; padding-bottom: 3.5rem !important; }
 
 /* Brand */
+.brand-capsule-wrap { margin-bottom: 0.6rem; }
+.header-hero-spacer { height: 1.2rem; }
+
 .brand-capsule {
     display: inline-flex; align-items: center; gap: 9px;
     background: rgba(255,255,255,.85); backdrop-filter: blur(14px);
@@ -454,15 +470,68 @@ header[data-testid="stHeader"] { background: transparent !important; color: #0f1
 .brand-sparkle { font-size: 1.05rem; color: #f43f5e; font-weight: 800; }
 .brand-title { font-weight: 700; font-size: .95rem; color: #0f172a; letter-spacing: -.01em; }
 
-/* Hero */
-.hero { padding: 2.2rem 0 1.4rem 0; }
-.hero h1 {
-    font-family: 'Fraunces', Georgia, serif !important;
-    font-size: 3rem; font-weight: 700; line-height: 1.08; letter-spacing: -.025em;
-    color: #0f172a; margin: 0 0 .85rem 0; padding: 0; max-width: 640px;
+/* Responsive Mobile View (<= 768px) */
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 1.4rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    .brand-capsule-wrap {
+        margin-bottom: 1.2rem !important;
+        display: flex !important;
+    }
+    .brand-capsule {
+        padding: 7px 16px !important;
+        margin-bottom: 0.6rem !important;
+    }
+    .header-hero-spacer {
+        height: 1.8rem !important;
+    }
+    .hero {
+        padding: 1.2rem 0 1rem 0 !important;
+    }
+    .hero h1 {
+        font-size: 2.1rem !important;
+        line-height: 1.22 !important;
+        letter-spacing: -.025em !important;
+        margin-bottom: .75rem !important;
+    }
+    .hero p {
+        font-size: 0.98rem !important;
+        line-height: 1.55 !important;
+        margin-bottom: 1.2rem !important;
+    }
+    .source-line {
+        font-size: 0.82rem !important;
+        padding: 5px 12px !important;
+        margin-bottom: 1.4rem !important;
+    }
+    .stButton button {
+        font-size: 0.82rem !important;
+        padding: 6px 14px !important;
+        margin-bottom: 6px !important;
+    }
 }
-.hero p { font-size: 1.06rem; line-height: 1.6; color: #475569; font-weight: 500; max-width: 600px; margin: 0 0 1.3rem 0; }
-.source-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: .88rem; color: #334155; font-weight: 600; }
+
+/* Hero */
+.hero { padding: 2.6rem 0 1.6rem 0; }
+.hero h1 {
+    font-family: 'Plus Jakarta Sans', 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-size: 3.15rem; font-weight: 800; line-height: 1.15; letter-spacing: -.035em;
+    color: #0f172a; margin: 0 0 1rem 0; padding: 0; max-width: 700px;
+}
+.hero p {
+    font-family: 'Plus Jakarta Sans', 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-size: 1.14rem; line-height: 1.65; color: #475569; font-weight: 500;
+    letter-spacing: -.01em; max-width: 650px; margin: 0 0 1.4rem 0;
+}
+.source-line {
+    display: inline-flex; align-items: center; gap: 10px; font-size: .88rem; color: #334155; font-weight: 600;
+    background: rgba(255,255,255,.75); padding: 6px 14px; border-radius: 999px;
+    border: 1px solid rgba(226,232,240,.9); margin-bottom: 1.8rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,.02);
+}
 .source-line .live { width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; }
 .dialect-badge {
     background: rgba(99,102,241,.1); color: #4f46e5; font-weight: 700; font-size: .75rem;
@@ -470,13 +539,19 @@ header[data-testid="stHeader"] { background: transparent !important; color: #0f1
 }
 .source-line .sep { color: #cbd5e1; }
 
+.section-label {
+    font-size: .78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; color: #94a3b8; margin: 1.2rem 0 .5rem 4px;
+}
+
 /* Buttons / chips */
 .stButton button {
     background: rgba(255,255,255,.72) !important; backdrop-filter: blur(14px) !important;
     border: 1px solid rgba(255,255,255,.95) !important; color: #334155 !important;
     font-weight: 600 !important; font-size: .85rem !important; border-radius: 999px !important;
-    padding: 7px 16px !important; box-shadow: 0 4px 12px rgba(148,163,184,.07) !important;
+    padding: 8px 18px !important; box-shadow: 0 4px 12px rgba(148,163,184,.07) !important;
     transition: all .2s ease !important;
+    margin-top: 4px !important; margin-bottom: 8px !important;
 }
 .stButton button:hover {
     background: #fff !important; color: #0f172a !important; border-color: rgba(244,63,94,.35) !important;
@@ -727,7 +802,7 @@ def _get_table_preview_cached(_db, db_name: str, table_name: str):
 n_tables = len(tables_found)
 top_c1, top_c2, top_c3 = st.columns([1.3, 1.1, 1.1])
 with top_c1:
-    st.markdown('<div class="brand-capsule"><span class="brand-sparkle">✦</span><span class="brand-title">Live SQL Parser</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-capsule-wrap"><div class="brand-capsule"><span class="brand-sparkle">✦</span><span class="brand-title">Live SQL Parser</span></div></div>', unsafe_allow_html=True)
 with top_c2:
     with st.popover(f"📂 {active_name}", width="stretch"):
         st.markdown("<h4 style='margin-top:0; color:#0f172a;'>Switch database</h4>", unsafe_allow_html=True)
@@ -752,6 +827,8 @@ with top_c3:
                     else:
                         st.warning(f"Couldn't preview {t_name}: {res_p.get('error')}")
 
+st.markdown('<div class="header-hero-spacer"></div>', unsafe_allow_html=True)
+
 # ------------------------------------------------------------------
 # Hero
 # ------------------------------------------------------------------
@@ -768,8 +845,26 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Quick questions
+# Search bar (Primary Action - Type or Dictate)
 # ------------------------------------------------------------------
+payload = query_bar(
+    prefill=st.session_state["query_input"],
+    placeholder=f"Ask about {active_name}, or tap the mic and say it",
+    key="sql_query_bar",
+    default=None,
+)
+if payload and payload.get("id") != st.session_state["last_bar_id"]:
+    st.session_state["last_bar_id"] = payload["id"]
+    st.session_state["query_input"] = payload["text"]
+    if payload.get("text", "").strip():
+        st.session_state["auto_run"] = True
+    else:
+        st.session_state["auto_run"] = False
+
+# ------------------------------------------------------------------
+# Quick questions / Suggestions (Directly below Search bar)
+# ------------------------------------------------------------------
+st.markdown("<div class='section-label'>Try asking:</div>", unsafe_allow_html=True)
 c1, c2, c3, c4 = st.columns(4)
 
 if current_source == "college":
@@ -826,23 +921,6 @@ if st.session_state["chat_history"]:
                     ask(q_text)
             if h_idx < len(st.session_state["chat_history"]) - 1:
                 st.markdown("<hr style='margin:4px 0 8px 0; border:none; border-top:1px solid #e2e8f0;'>", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------
-# Search bar (type or dictate)
-# ------------------------------------------------------------------
-payload = query_bar(
-    prefill=st.session_state["query_input"],
-    placeholder=f"Ask about {active_name}, or tap the mic and say it",
-    key="sql_query_bar",
-    default=None,
-)
-if payload and payload.get("id") != st.session_state["last_bar_id"]:
-    st.session_state["last_bar_id"] = payload["id"]
-    st.session_state["query_input"] = payload["text"]
-    if payload.get("text", "").strip():
-        st.session_state["auto_run"] = True
-    else:
-        st.session_state["auto_run"] = False
 
 # ------------------------------------------------------------------
 # Run query
