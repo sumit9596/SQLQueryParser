@@ -10,6 +10,8 @@ The old `streamlit_mic_recorder` package is no longer required.
 import sys
 import os
 import io
+import re
+import time
 import uuid
 import importlib
 from html import escape as esc
@@ -69,12 +71,35 @@ if not local_agent_available:
     st.stop()
 
 
+def esc_md(text: str) -> str:
+    """Escape markdown special characters so user text doesn't break styling."""
+    if not text:
+        return ""
+    return re.sub(r"([*_`\[\]])", r"\\\1", esc(str(text)))
+
+
 def get_local_agent(db_manager: "DatabaseManager" = None):
-    try:
-        return SQLAgent(db_manager=db_manager)
-    except Exception as e:
-        st.session_state["agent_error"] = str(e)
-        return None
+    """
+    Returns a cached SQLAgent instance from session state to avoid recreating
+    the LLM client and reloading the database schema on every user query.
+    """
+    active = db_manager or get_active_db()
+    agent = st.session_state.get("sql_agent")
+    if agent is None:
+        try:
+            agent = SQLAgent(db_manager=active)
+            st.session_state["sql_agent"] = agent
+        except Exception as e:
+            st.session_state["agent_error"] = str(e)
+            return None
+    else:
+        # If database changed, update agent without recreating the whole instance
+        if active and getattr(agent, "db", None) != active:
+            if hasattr(agent, "set_db_manager"):
+                agent.set_db_manager(active)
+            else:
+                agent.db = active
+    return agent
 
 
 def execute_agent_query(user_prompt: str, history=None, db_manager: "DatabaseManager" = None):
@@ -89,23 +114,28 @@ def execute_agent_query(user_prompt: str, history=None, db_manager: "DatabaseMan
             kwargs["db_manager"] = db_manager
         return agent.run(user_prompt, **kwargs)
 
-    try:
-        res = requests.post(
-            f"{BACKEND_URL}/ask",
-            json={"query": user_prompt, "history": history},
-            timeout=30,
-        )
-        if res.status_code == 200:
-            return res.json()
-    except Exception:
-        pass
+    # Note: If the user selected an uploaded file or MySQL, the separate remote backend
+    # cannot query this process's in-memory or private DB.
+    # Only fall back to remote HTTP API if using the default college demo.
+    current_source = st.session_state.get("active_source", "college")
+    if current_source == "college":
+        try:
+            res = requests.post(
+                f"{BACKEND_URL}/ask",
+                json={"query": user_prompt, "history": history},
+                timeout=30,
+            )
+            if res.status_code == 200:
+                return res.json()
+        except Exception:
+            pass
 
     detail = st.session_state.get("agent_error")
     return {
         "success": False,
         "status": "error",
-        "answer": "The query engine isn't reachable."
-                  + (f" Details: {detail}" if detail else " Check that the backend is running."),
+        "answer": f"The query engine isn't reachable for the active '{current_source}' database."
+                  + (f" Details: {detail}" if detail else " Check that the engine is configured properly."),
         "sql_query": None,
         "data": [],
     }
@@ -205,7 +235,10 @@ VOICE_BAR_HTML = r"""<!doctype html>
   .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
   .hint.err { color:var(--rose-deep); }
 
-  @media (max-width:520px) { .lang { display:none; } .send { padding:0 16px; } }
+  @media (max-width:520px) {
+    .lang { padding:4px 8px; font-size:.72rem; }
+    .send { padding:0 14px; font-size:.86rem; }
+  }
 </style></head>
 <body>
   <div class="bar" id="bar">
@@ -340,6 +373,7 @@ VOICE_BAR_HTML = r"""<!doctype html>
   });
   q.addEventListener('input', autosize);
   q.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape' && want) { e.preventDefault(); stopListening(false); }
     else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -522,12 +556,12 @@ def reset_conversation():
     st.session_state["chat_history"] = []
     st.session_state["last_result"] = None
     st.session_state["query_input"] = ""
-    try:
-        agent = get_local_agent(db_manager=get_active_db())
-        if agent and hasattr(agent, "clear_memory"):
+    agent = st.session_state.get("sql_agent")
+    if agent and hasattr(agent, "clear_memory"):
+        try:
             agent.clear_memory()
-    except Exception:
-        pass
+        except Exception:
+            pass
 
 
 def get_active_db():
@@ -574,19 +608,27 @@ def render_database_source_selector(key_prefix="main"):
                             lower = uf.name.lower()
                             if lower.endswith(".csv"):
                                 try:
-                                    df = pd.read_csv(uf, encoding="utf-8", encoding_errors="replace")
+                                    # Strict UTF-8 first so decode errors can fall back to latin1
+                                    df = pd.read_csv(uf, encoding="utf-8")
+                                except (UnicodeDecodeError, UnicodeError):
+                                    uf.seek(0)
+                                    try:
+                                        df = pd.read_csv(uf, encoding="latin1")
+                                    except Exception:
+                                        uf.seek(0)
+                                        df = pd.read_csv(uf, encoding="utf-8", encoding_errors="replace")
                                 except Exception:
                                     uf.seek(0)
-                                    df = pd.read_csv(uf, encoding="latin1", encoding_errors="replace")
+                                    df = pd.read_csv(uf)
                                 files_dict[uf.name] = df
                             else:
                                 xl = pd.ExcelFile(uf, engine="openpyxl")
                                 if len(xl.sheet_names) == 1:
-                                    files_dict[uf.name] = pd.read_excel(uf, sheet_name=xl.sheet_names[0], engine="openpyxl")
+                                    files_dict[uf.name] = xl.parse(xl.sheet_names[0])
                                 else:
                                     stem = Path(uf.name).stem
                                     for s in xl.sheet_names:
-                                        files_dict[f"{stem}_{s}"] = pd.read_excel(uf, sheet_name=s, engine="openpyxl")
+                                        files_dict[f"{stem}_{s}"] = xl.parse(s)
                         except Exception as err:
                             st.error(f"Couldn't read {uf.name}: {err}")
                     if files_dict:
@@ -620,14 +662,25 @@ def render_database_source_selector(key_prefix="main"):
                     st.error("Enter a database name.")
                 else:
                     clean_host = m_host.strip()
-                    if clean_host.startswith("localhost") and len(clean_host) > 9 and not clean_host.startswith("localhost:"):
-                        clean_host = clean_host[9:].strip()
                     for prefix in ("https://", "http://"):
-                        if clean_host.startswith(prefix):
+                        if clean_host.lower().startswith(prefix):
                             clean_host = clean_host[len(prefix):].strip()
+
+                    # Fix accidental repeated "localhostlocalhost" paste error
+                    if clean_host.lower().startswith("localhostlocalhost"):
+                        clean_host = clean_host[9:].strip()
+
+                    # Extract port if user entered host:port in the Host box
+                    m_port_val = int(m_port)
+                    if ":" in clean_host and not clean_host.startswith("["):
+                        host_part, _, port_part = clean_host.partition(":")
+                        clean_host = host_part.strip()
+                        if port_part.strip().isdigit():
+                            m_port_val = int(port_part.strip())
+
                     with st.spinner(f"Connecting to {m_db}..."):
                         ok, mgr, msg = create_mysql_db_manager(
-                            host=clean_host, port=int(m_port), user=m_user.strip(),
+                            host=clean_host, port=m_port_val, user=m_user.strip(),
                             password=m_pass, dbname=m_db.strip(),
                         )
                         if ok and mgr:
@@ -661,6 +714,13 @@ active_dialect = active_db.get_db_dialect().upper()
 tables_found = active_db.get_table_names()
 current_source = st.session_state.get("active_source", "college")
 
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _get_table_preview_cached(_db, db_name: str, table_name: str):
+    """Caches table previews so popover renders don't re-query the DB on every interaction."""
+    return _db.preview_table(table_name, limit=5)
+
+
 # ------------------------------------------------------------------
 # Top row: Brand & Database Controls
 # ------------------------------------------------------------------
@@ -684,7 +744,7 @@ with top_c3:
             tabs = st.tabs([t.title().replace("_", " ") for t in shown])
             for tab, t_name in zip(tabs, shown):
                 with tab:
-                    res_p = active_db.preview_table(t_name, limit=5)
+                    res_p = _get_table_preview_cached(active_db, str(active_name), t_name)
                     if res_p["success"]:
                         cols_str = ", ".join(f"<code>{esc(str(c))}</code>" for c in res_p["columns"][:8])
                         st.markdown(f"<div class='small-muted' style='margin-bottom:8px;'>Columns: {cols_str}</div>", unsafe_allow_html=True)
@@ -749,9 +809,6 @@ if st.session_state["chat_history"]:
     with col_rst:
         if st.button("Start fresh", key="clear_ctx", width="stretch"):
             reset_conversation()
-            agent = get_local_agent(db_manager=active_db)
-            if agent:
-                agent.clear_memory()
             st.rerun()
 
     with st.expander(f"Recent questions ({len(st.session_state['chat_history'])})", expanded=False):
@@ -761,9 +818,9 @@ if st.session_state["chat_history"]:
             q_summary = h.get("summary", "")
             hq1, hq2 = st.columns([4, 1.2])
             with hq1:
-                st.markdown(f"**Q{q_num}:** {esc(q_text)}")
+                st.markdown(f"**Q{q_num}:** {esc_md(q_text)}")
                 if q_summary:
-                    st.markdown(f"<div class='small-muted' style='margin-bottom:6px;'>{esc(q_summary)}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='small-muted' style='margin-bottom:6px;'>{esc_md(q_summary)}</div>", unsafe_allow_html=True)
             with hq2:
                 if st.button("↺ Ask again", key=f"reask_{h_idx}_{q_num}", width="stretch"):
                     ask(q_text)
@@ -794,13 +851,13 @@ if st.session_state.get("auto_run") and st.session_state["query_input"].strip():
     st.session_state["auto_run"] = False
     active_query = st.session_state["query_input"].strip()
     with st.spinner("Working on it..."):
-        import time
         t0 = time.time()
         res = execute_agent_query(active_query, history=st.session_state["chat_history"], db_manager=active_db)
         res["execution_time"] = round(time.time() - t0, 2)
         st.session_state["last_result"] = res
         if res.get("success"):
-            st.session_state["chat_history"] = res.get("history", st.session_state["chat_history"])
+            new_hist = res.get("history", st.session_state["chat_history"])
+            st.session_state["chat_history"] = new_hist[-6:] if len(new_hist) > 6 else new_hist
 
 # ------------------------------------------------------------------
 # Result
@@ -874,9 +931,14 @@ if result:
             # 2. Results Data Table (Directly below Answer)
             if data:
                 df = pd.DataFrame(data)
-                row_label = f"{len(df):,} row{'s' if len(df) != 1 else ''}"
+                total_rows = len(df)
+                max_display = 1000
+                display_df = df.iloc[:max_display] if total_rows > max_display else df
+                row_label = f"{total_rows:,} row{'s' if total_rows != 1 else ''}"
+                if total_rows > max_display:
+                    row_label += f" (showing first {max_display:,})"
                 st.markdown(f"#### Results ({row_label})")
-                st.dataframe(df, width="stretch")
+                st.dataframe(display_df, width="stretch")
 
                 e1, e2 = st.columns(2)
                 with e1:
@@ -893,8 +955,8 @@ if result:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             width="stretch",
                         )
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        st.caption(f"Excel export unavailable ({ex})")
             elif result.get("success"):
                 st.info("The query ran fine but returned no rows. Try loosening a filter.")
 

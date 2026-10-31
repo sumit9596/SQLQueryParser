@@ -75,7 +75,10 @@
   .hint { min-height:18px; margin:8px 0 0 22px; font-size:.82rem; color:var(--muted); font-weight:500; }
   .hint.err { color:var(--rose-deep); }
 
-  @media (max-width:520px) { .lang { display:none; } .send { padding:0 16px; } }
+  @media (max-width:520px) {
+    .lang { padding:4px 8px; font-size:.72rem; }
+    .send { padding:0 14px; font-size:.86rem; }
+  }
 </style></head>
 <body>
   <div class="bar" id="bar">
@@ -210,6 +213,7 @@
   });
   q.addEventListener('input', autosize);
   q.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape' && want) { e.preventDefault(); stopListening(false); }
     else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
