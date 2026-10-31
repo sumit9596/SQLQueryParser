@@ -9,6 +9,7 @@ Enforces strict read-only execution at the database engine level and provides dy
 
 import os
 import re
+import io
 import datetime
 import urllib.parse
 from pathlib import Path
@@ -254,6 +255,49 @@ def create_file_session_db(files_data: Dict[str, pd.DataFrame], session_id: str 
         name=f"Uploaded Tables ({', '.join(loaded_tables[:3])}{'...' if len(loaded_tables) > 3 else ''})",
         dialect="sqlite"
     )
+
+def parse_pasted_data(text_content: str) -> pd.DataFrame:
+    """
+    Parses raw user-pasted text into a clean DataFrame.
+    Supports:
+    - Tab-separated (Excel / Google Sheets direct copy)
+    - Comma-separated (CSV)
+    - Pipe-separated (Markdown tables)
+    - Auto-sniffed delimiters
+    """
+    cleaned = text_content.strip()
+    if not cleaned:
+        raise ValueError("Pasted text is empty.")
+
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    # If markdown table with divider line (e.g. |---|---|)
+    if len(lines) >= 2 and any(re.match(r"^\|?[\s\-:|]+\|?$", ln) for ln in lines[1:3]):
+        filtered = [ln for ln in lines if not re.match(r"^\|?[\s\-:|]+\|?$", ln)]
+        normalized = []
+        for ln in filtered:
+            ln_str = re.sub(r"^\|", "", ln.strip()).strip()
+            ln_str = re.sub(r"\|$", "", ln_str).strip()
+            normalized.append(ln_str)
+        cleaned = "\n".join(normalized)
+        df = pd.read_csv(io.StringIO(cleaned), sep=r"\s*\|\s*", engine="python")
+    else:
+        # Auto-sniff delimiter
+        try:
+            df = pd.read_csv(io.StringIO(cleaned), sep=None, engine="python")
+        except Exception:
+            for candidate in ["\t", ",", ";"]:
+                try:
+                    df = pd.read_csv(io.StringIO(cleaned), sep=candidate)
+                    if len(df.columns) > 1:
+                        break
+                except Exception:
+                    continue
+            else:
+                df = pd.read_csv(io.StringIO(cleaned))
+
+    # Clean column names
+    df.columns = [re.sub(r"^[^\w]+|[^\w]+$", "", str(c)).strip() or f"col_{i}" for i, c in enumerate(df.columns)]
+    return df
 
 def create_mysql_db_manager(
     host: str,

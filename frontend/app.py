@@ -60,6 +60,7 @@ try:
         get_default_db_manager,
         create_file_session_db,
         create_mysql_db_manager,
+        parse_pasted_data,
     )
     local_agent_available = True
 except Exception as e:
@@ -655,7 +656,7 @@ def ask(text: str):
 
 
 def render_database_source_selector(key_prefix="main"):
-    tab_demo, tab_upload, tab_mysql = st.tabs(["College demo", "Upload files", "MySQL"])
+    tab_demo, tab_upload, tab_paste, tab_mysql = st.tabs(["College demo", "Upload files", "📋 Paste data", "MySQL"])
 
     with tab_demo:
         st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>College demo (SQLite)</div>", unsafe_allow_html=True)
@@ -717,6 +718,62 @@ def render_database_source_selector(key_prefix="main"):
         if st.session_state.get("active_source") == "upload" and st.session_state.get("uploaded_db"):
             st.success(f"Active: {st.session_state['uploaded_db'].name}")
             if st.button("Reset to College Demo", key=f"{key_prefix}_clear_uploaded", width="stretch"):
+                st.session_state["uploaded_db"] = None
+                st.session_state["active_source"] = "college"
+                reset_conversation()
+                st.rerun()
+
+    with tab_paste:
+        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Paste table data directly</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows directly from Excel, Google Sheets, ChatGPT, or CSV text. No file download required!</div>", unsafe_allow_html=True)
+
+        paste_table_name = st.text_input(
+            "Table name",
+            value="pasted_data",
+            key=f"{key_prefix}_pname",
+            placeholder="e.g. sales, employees, inventory"
+        )
+        sample_tsv = "id\tname\tdepartment\tsalary\n101\tAarav\tEngineering\t85000\n102\tSneha\tMarketing\t72000\n103\tRohan\tSales\t65000"
+        pasted_text = st.text_area(
+            "Paste rows here (CSV, TSV, or Excel copy)",
+            height=125,
+            key=f"{key_prefix}_ptext",
+            placeholder="id, name, department, salary\n101, Aarav, Engineering, 85000\n102, Sneha, Marketing, 72000"
+        )
+
+        btn_col1, btn_col2 = st.columns([1, 1])
+        with btn_col1:
+            submit_paste = st.button("Create Table", key=f"{key_prefix}_submit_paste", width="stretch")
+        with btn_col2:
+            if st.button("Insert Sample Data", key=f"{key_prefix}_sample_paste", width="stretch"):
+                st.session_state[f"{key_prefix}_ptext"] = sample_tsv
+                st.rerun()
+
+        if submit_paste:
+            if not pasted_text.strip():
+                st.error("Please paste some table data first.")
+            else:
+                with st.spinner("Building table from pasted data..."):
+                    try:
+                        df = parse_pasted_data(pasted_text)
+                        if df.empty or len(df.columns) == 0:
+                            st.error("Could not parse columns from pasted text. Please check format.")
+                        else:
+                            clean_tname = re.sub(r"[^\w]+", "_", paste_table_name.strip()).strip("_") or "pasted_data"
+                            st.session_state["uploaded_db"] = create_file_session_db(
+                                {clean_tname: df},
+                                session_id=f"user_{st.session_state['sid']}"
+                            )
+                            st.session_state["active_source"] = "upload"
+                            reset_conversation()
+                            st.toast(f"Table '{clean_tname}' created with {len(df)} rows & {len(df.columns)} columns!")
+                            st.rerun()
+                    except Exception as err:
+                        st.error(f"Failed to parse table: {err}")
+
+        if st.session_state.get("active_source") == "upload" and st.session_state.get("uploaded_db"):
+            st.success(f"Active: {st.session_state['uploaded_db'].name}")
+            if st.button("Reset to College Demo", key=f"{key_prefix}_clear_pasted", width="stretch"):
                 st.session_state["uploaded_db"] = None
                 st.session_state["active_source"] = "college"
                 reset_conversation()
