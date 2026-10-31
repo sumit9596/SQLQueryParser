@@ -658,6 +658,16 @@ def ask(text: str):
     st.rerun()
 
 
+def load_sample_paste_data(key: str):
+    st.session_state[key] = (
+        "id\tname\tdepartment\tsalary\n"
+        "101\tAarav\tEngineering\t85000\n"
+        "102\tSneha\tMarketing\t72000\n"
+        "103\tRohan\tSales\t65000\n"
+        "104\tPriya\tDesign\t70000"
+    )
+
+
 def render_database_source_selector(key_prefix="main"):
     tab_demo, tab_upload, tab_paste, tab_mysql = st.tabs(["College demo", "Upload files", "📋 Paste data", "MySQL"])
 
@@ -727,49 +737,46 @@ def render_database_source_selector(key_prefix="main"):
                 st.rerun()
 
     with tab_paste:
-        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Paste table data directly</div>", unsafe_allow_html=True)
-        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows directly from Excel, Google Sheets, ChatGPT, or CSV text. No file download required!</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Paste Raw Data Directly</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows from Excel, Google Sheets, ChatGPT, or CSV text and paste below. Convert sab system automatically karega!</div>", unsafe_allow_html=True)
 
-        paste_table_name = st.text_input(
-            "Table name",
-            value="pasted_data",
-            key=f"{key_prefix}_pname",
-            placeholder="e.g. sales, employees, inventory"
-        )
-        sample_tsv = "id\tname\tdepartment\tsalary\n101\tAarav\tEngineering\t85000\n102\tSneha\tMarketing\t72000\n103\tRohan\tSales\t65000"
+        ptext_key = f"{key_prefix}_ptext"
         pasted_text = st.text_area(
-            "Paste rows here (CSV, TSV, or Excel copy)",
-            height=125,
-            key=f"{key_prefix}_ptext",
-            placeholder="id, name, department, salary\n101, Aarav, Engineering, 85000\n102, Sneha, Marketing, 72000"
+            "Paste raw data here",
+            height=135,
+            key=ptext_key,
+            placeholder="id\tname\tdepartment\tsalary\n101\tAarav\tEngineering\t85000\n102\tSneha\tMarketing\t72000"
         )
 
         btn_col1, btn_col2 = st.columns([1, 1])
         with btn_col1:
-            submit_paste = st.button("Create Table", key=f"{key_prefix}_submit_paste", width="stretch")
+            submit_paste = st.button("Load & Query Data", key=f"{key_prefix}_submit_paste", width="stretch")
         with btn_col2:
-            if st.button("Insert Sample Data", key=f"{key_prefix}_sample_paste", width="stretch"):
-                st.session_state[f"{key_prefix}_ptext"] = sample_tsv
-                st.rerun()
+            st.button(
+                "Try Sample Data",
+                key=f"{key_prefix}_sample_paste",
+                width="stretch",
+                on_click=load_sample_paste_data,
+                args=(ptext_key,)
+            )
 
         if submit_paste:
-            if not pasted_text.strip():
-                st.error("Please paste some table data first.")
+            if not pasted_text or not pasted_text.strip():
+                st.error("Pehle kuch data paste karein.")
             else:
-                with st.spinner("Building table from pasted data..."):
+                with st.spinner("Processing & building query table..."):
                     try:
                         df = parse_pasted_data(pasted_text)
                         if df.empty or len(df.columns) == 0:
                             st.error("Could not parse columns from pasted text. Please check format.")
                         else:
-                            clean_tname = re.sub(r"[^\w]+", "_", paste_table_name.strip()).strip("_") or "pasted_data"
                             st.session_state["uploaded_db"] = create_file_session_db(
-                                {clean_tname: df},
+                                {"user_data": df},
                                 session_id=f"user_{st.session_state['sid']}"
                             )
                             st.session_state["active_source"] = "upload"
                             reset_conversation()
-                            st.toast(f"Table '{clean_tname}' created with {len(df)} rows & {len(df.columns)} columns!")
+                            st.toast(f"Data ready! Loaded {len(df)} rows & {len(df.columns)} columns into 'user_data'.")
                             st.rerun()
                     except Exception as err:
                         st.error(f"Failed to parse table: {err}")
