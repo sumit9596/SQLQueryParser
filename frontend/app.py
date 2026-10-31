@@ -738,7 +738,7 @@ def render_database_source_selector(key_prefix="main"):
 
     with tab_paste:
         st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Paste Raw Data Directly</div>", unsafe_allow_html=True)
-        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows from Excel, Google Sheets, ChatGPT, or CSV text and paste below. Convert sab system automatically karega!</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows directly from Excel, Google Sheets, or CSV text and paste below. The system automatically structures and loads your table.</div>", unsafe_allow_html=True)
 
         ptext_key = f"{key_prefix}_ptext"
         pasted_text = st.text_area(
@@ -762,7 +762,7 @@ def render_database_source_selector(key_prefix="main"):
 
         if submit_paste:
             if not pasted_text or not pasted_text.strip():
-                st.error("Pehle kuch data paste karein.")
+                st.error("Please paste some tabular data first.")
             else:
                 with st.spinner("Processing & building query table..."):
                     try:
