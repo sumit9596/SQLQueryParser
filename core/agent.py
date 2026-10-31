@@ -86,6 +86,123 @@ class SQLAgent:
         """Resets the conversation history buffer."""
         self.memory.clear()
 
+    def _heuristic_sql_fallback(
+        self,
+        user_query: str,
+        active_db: DatabaseManager,
+        dialect: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Offline rule-based fail-safe engine: Generates verified safe SQL for common inquiries
+        when external LLM APIs encounter quota limits, timeouts, or network loss.
+        """
+        q = user_query.strip().lower()
+        tables = active_db.get_table_names()
+        if not tables:
+            return None
+
+        clean_sql = None
+        logic_step = None
+
+        # Pattern 1: Count records (e.g. "count students", "how many records in marks", "total rows in ...")
+        count_match = re.search(r"(?:count|total|how many)\s+(?:records|rows|data)?\s*(?:in|of|from)?\s*([a-zA-Z0-9_]+)", q)
+        if count_match:
+            target_table = count_match.group(1).strip()
+            matched_t = next((t for t in tables if t.lower() == target_table or target_table in t.lower()), None)
+            if matched_t:
+                clean_sql = f"SELECT COUNT(*) AS total_count FROM {matched_t};"
+                logic_step = f"⚡ Computed total record count for table '{matched_t}' via offline fail-safe rules."
+
+        # Pattern 2: Top / Sample N records (e.g. "show top 5 records from students", "sample 10 rows from marks")
+        if not clean_sql:
+            top_match = re.search(r"(?:top|first|sample|show)?\s*(\d+)?\s*(?:records|rows|data)?\s*(?:from|in|of)\s*([a-zA-Z0-9_]+)", q)
+            if top_match:
+                limit_num = int(top_match.group(1)) if top_match.group(1) else 5
+                target_table = top_match.group(2).strip()
+                matched_t = next((t for t in tables if t.lower() == target_table or target_table in t.lower()), None)
+                if matched_t:
+                    clean_sql = f"SELECT * FROM {matched_t} LIMIT {min(limit_num, 50)};"
+                    logic_step = f"⚡ Retrieved top {limit_num} records from '{matched_t}' via offline fail-safe rules."
+
+        # Pattern 3: Roll number lookup (e.g. "roll number 5", "roll no 5 ka data")
+        if not clean_sql and "students" in [t.lower() for t in tables]:
+            roll_match = re.search(r"roll\s*(?:no|number)?\s*[:=]?\s*(\d+)", q)
+            if roll_match:
+                roll_val = int(roll_match.group(1))
+                if "marks" in [t.lower() for t in tables]:
+                    clean_sql = (
+                        f"SELECT s.roll_no, s.name, s.gender, s.year_of_study, m.subject, m.marks_obtained, m.grade "
+                        f"FROM students s LEFT JOIN marks m ON s.student_id = m.student_id "
+                        f"WHERE s.roll_no = {roll_val};"
+                    )
+                    logic_step = f"⚡ Retrieved student details and marks for Roll No {roll_val} via relational JOIN."
+                else:
+                    clean_sql = f"SELECT * FROM students WHERE roll_no = {roll_val};"
+                    logic_step = f"⚡ Filtered student record matching Roll No {roll_val}."
+
+        # Pattern 4: Top students with highest marks
+        if not clean_sql and any(k in q for k in ["highest marks", "top 3 students", "top students", "topper"]):
+            if "students" in [t.lower() for t in tables] and "marks" in [t.lower() for t in tables]:
+                clean_sql = (
+                    "SELECT s.name, s.roll_no, SUM(m.marks_obtained) AS total_marks "
+                    "FROM students s JOIN marks m ON s.student_id = m.student_id "
+                    "GROUP BY s.student_id, s.name, s.roll_no "
+                    "ORDER BY total_marks DESC LIMIT 3;"
+                )
+                logic_step = "⚡ Aggregated total marks by student and sorted in descending order to surface top 3."
+
+        # Pattern 5: Subject averages
+        if not clean_sql and any(k in q for k in ["subject average", "average marks", "avg marks", "subject averages"]):
+            if "marks" in [t.lower() for t in tables]:
+                clean_sql = (
+                    "SELECT subject, ROUND(AVG(marks_obtained), 2) AS average_marks "
+                    "FROM marks GROUP BY subject ORDER BY average_marks DESC;"
+                )
+                logic_step = "⚡ Computed mean marks grouped by subject."
+
+        # Pattern 6: Department filter (e.g. "computer science department")
+        if not clean_sql and "department" in q and "students" in [t.lower() for t in tables]:
+            for dept_kw in ["computer science", "mechanical", "electrical", "data science"]:
+                if dept_kw in q:
+                    clean_sql = (
+                        f"SELECT s.roll_no, s.name, s.year_of_study, d.dept_name "
+                        f"FROM students s JOIN departments d ON s.dept_id = d.dept_id "
+                        f"WHERE LOWER(d.dept_name) LIKE '%{dept_kw}%';"
+                    )
+                    logic_step = f"⚡ Filtered students belonging to '{dept_kw}' department."
+                    break
+
+        # Pattern 7: Generic "show table" / "list table"
+        if not clean_sql:
+            for t in tables:
+                if t.lower() in q:
+                    clean_sql = f"SELECT * FROM {t} LIMIT 5;"
+                    logic_step = f"⚡ Displayed sample rows from table '{t}'."
+                    break
+
+        if not clean_sql:
+            return None
+
+        # Execute safe query
+        is_safe, validated_sql = validate_sql_query(clean_sql, dialect=dialect)
+        if not is_safe:
+            return None
+
+        exec_res = active_db.execute_query(validated_sql)
+        if not exec_res.get("success"):
+            return None
+
+        return {
+            "success": True,
+            "status": "heuristic_fallback",
+            "answer": "Answered via fail-safe heuristic engine (LLM quota temporarily unavailable): Displaying matching data records.",
+            "sql_query": validated_sql,
+            "columns": exec_res.get("columns", []),
+            "data": exec_res.get("rows", []),
+            "row_count": exec_res.get("row_count", 0),
+            "logic_steps": [logic_step] if logic_step else ["⚡ Executed safe fallback query."],
+        }
+
     def run(
         self,
         user_query: str,
@@ -122,6 +239,7 @@ class SQLAgent:
         )
         
         logic_steps = []
+        llm_error_obj = None
         try:
             llm_res = call_llm(prompt, expect_json=True)
             category = llm_res.get("category", "DATA_QUERY") or "DATA_QUERY"
@@ -132,6 +250,7 @@ class SQLAgent:
             if isinstance(raw_steps, list):
                 logic_steps = [str(s).strip() for s in raw_steps if str(s).strip()]
         except Exception as e:
+            llm_error_obj = e
             category = "DATA_QUERY"
             direct_answer = ""
             sql_query = ""
@@ -188,10 +307,27 @@ class SQLAgent:
         })
 
         if not sql_query:
+            # Attempt offline heuristic fallback for common queries
+            fallback_res = self._heuristic_sql_fallback(user_query, active_db, dialect)
+            if fallback_res:
+                fallback_res["logs"] = logs
+                fallback_res["history"] = effective_history
+                return fallback_res
+
+            from core.llm_client import is_quota_error
+            is_quota = is_quota_error(llm_error_obj) if llm_error_obj else False
+            status_code = "quota_exhausted" if is_quota else "llm_error"
+            answer_msg = (
+                "⚠️ AI Model Quota Limit Reached: The Gemini API quota is temporarily exhausted. "
+                "You can still use the Quick Questions chips, browse tables in the header, "
+                "or enter a personal Gemini API key in the sidebar to resume immediately."
+                if is_quota else
+                "Unable to synthesize a valid SQL query for this inquiry. Check that the backend/LLM is responsive."
+            )
             return {
                 "success": False,
-                "status": "llm_error",
-                "answer": "Unable to synthesize a valid SQL query for this inquiry.",
+                "status": status_code,
+                "answer": answer_msg,
                 "sql_query": None,
                 "columns": [],
                 "data": [],

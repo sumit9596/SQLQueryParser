@@ -783,6 +783,23 @@ with st.sidebar:
     st.markdown("<p class='small-muted' style='margin-bottom:14px;'>Pick where your questions should run.</p>", unsafe_allow_html=True)
     render_database_source_selector(key_prefix="sidebar")
 
+    with st.expander("🔑 Backup API Key (Fail-Safe)", expanded=False):
+        st.markdown("<div class='small-muted' style='margin-bottom:8px;'>If the default API quota limit is reached, enter a personal Gemini API key here to resume queries immediately.</div>", unsafe_allow_html=True)
+        custom_key_val = st.text_input("Custom Gemini Key", type="password", value=st.session_state.get("custom_gemini_key", ""), key="input_custom_key", placeholder="AIzaSy...")
+        if st.button("Apply API Key", key="save_custom_key_btn", width="stretch"):
+            if custom_key_val.strip():
+                st.session_state["custom_gemini_key"] = custom_key_val.strip()
+                os.environ["CUSTOM_GEMINI_API_KEY"] = custom_key_val.strip()
+                st.session_state["sql_agent"] = None
+                st.toast("API key active!")
+                st.rerun()
+            else:
+                st.session_state["custom_gemini_key"] = ""
+                os.environ.pop("CUSTOM_GEMINI_API_KEY", None)
+                st.session_state["sql_agent"] = None
+                st.toast("Reset to default system API keys.")
+                st.rerun()
+
 active_db = get_active_db()
 active_name = active_db.name
 active_dialect = active_db.get_db_dialect().upper()
@@ -954,6 +971,9 @@ if result:
         elif status == "security_violation":
             st.error(f"🛡️ Guardrail Blocked: {answer}")
             st.caption("Only safe, read-only queries (SELECT) are permitted. Table alterations or mutations are restricted.")
+        elif status == "quota_exhausted":
+            st.warning(answer)
+            st.info("💡 **Fail-Safe Tip:** You can enter your personal free Gemini API key in the left sidebar under **'🔑 Backup API Key'** to bypass quota limits immediately.")
         elif not result.get("success"):
             st.error(answer)
         elif status == "schema_info":
@@ -1000,8 +1020,9 @@ if result:
         else:
             # 1. Answer Box
             meta_pill = f" <span style='font-size:.78rem; font-weight:600; color:#64748b; margin-left:8px;'>• {exec_time}s</span>" if exec_time else ""
+            fail_safe_badge = " <span style='background:rgba(245,158,11,.15); color:#b45309; padding:2px 8px; border-radius:6px; font-size:.75rem; font-weight:700;'>⚡ Offline Fail-Safe</span>" if status == "heuristic_fallback" else ""
             st.markdown(
-                f"<div class='answer-box'><div class='answer-label'>Answer{meta_pill}</div>"
+                f"<div class='answer-box'><div class='answer-label'>Answer{fail_safe_badge}{meta_pill}</div>"
                 f"<div class='answer-text'>{esc(answer)}</div></div>",
                 unsafe_allow_html=True,
             )
