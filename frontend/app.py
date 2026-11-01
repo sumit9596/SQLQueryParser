@@ -678,6 +678,33 @@ def reset_conversation():
             pass
 
 
+def clear_user_session_data():
+    """Physically deletes user's custom database session file from disk and resets to clean College Demo."""
+    sid = st.session_state.get("sid")
+    if sid:
+        clean_sid = re.sub(r"[^a-zA-Z0-9_]+", "", f"user_{sid}")
+        db_path = PROJECT_ROOT / "data" / "sessions" / f"session_{clean_sid}.db"
+        if st.session_state.get("uploaded_db"):
+            try:
+                st.session_state["uploaded_db"].engine.dispose()
+            except Exception:
+                pass
+        try:
+            if db_path.exists():
+                db_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    st.session_state["uploaded_db"] = None
+    st.session_state["active_source"] = "college"
+    st.session_state["query_input"] = ""
+    try:
+        _get_table_preview_cached.clear()
+    except Exception:
+        pass
+    reset_conversation()
+
+
 def get_active_db():
     src = st.session_state.get("active_source", "college")
     if src == "upload" and st.session_state.get("uploaded_db"):
@@ -776,10 +803,9 @@ def render_database_source_selector(key_prefix="main"):
                         st.rerun()
         if st.session_state.get("active_source") == "upload" and st.session_state.get("uploaded_db"):
             st.success(f"Active: {st.session_state['uploaded_db'].name}")
-            if st.button("Reset to College Demo", key=f"{key_prefix}_clear_uploaded", width="stretch"):
-                st.session_state["uploaded_db"] = None
-                st.session_state["active_source"] = "college"
-                reset_conversation()
+            if st.button("🗑️ Delete Data & Start Fresh (College Demo)", key=f"{key_prefix}_clear_uploaded", width="stretch"):
+                clear_user_session_data()
+                st.toast("Data deleted! Back to clean College Demo.")
                 st.rerun()
 
     with tab_paste:
@@ -831,10 +857,9 @@ def render_database_source_selector(key_prefix="main"):
 
         if st.session_state.get("active_source") == "upload" and st.session_state.get("uploaded_db"):
             st.success(f"Active: {st.session_state['uploaded_db'].name}")
-            if st.button("Reset to College Demo", key=f"{key_prefix}_clear_pasted", width="stretch"):
-                st.session_state["uploaded_db"] = None
-                st.session_state["active_source"] = "college"
-                reset_conversation()
+            if st.button("🗑️ Delete Data & Start Fresh (College Demo)", key=f"{key_prefix}_clear_pasted", width="stretch"):
+                clear_user_session_data()
+                st.toast("Data deleted! Back to clean College Demo.")
                 st.rerun()
 
     with tab_mysql:
@@ -958,6 +983,13 @@ with top_c3:
                         st.dataframe(pd.DataFrame(res_p["rows"]), height=240, width="stretch")
                     else:
                         st.warning(f"Couldn't preview {t_name}: {res_p.get('error')}")
+
+        if st.session_state.get("active_source") == "upload":
+            st.markdown("<hr style='margin:14px 0 10px; border:none; border-top:1px solid #e2e8f0;'>", unsafe_allow_html=True)
+            if st.button("🗑️ Delete My Data & Start Fresh", key="browse_clear_tables_btn", width="stretch"):
+                clear_user_session_data()
+                st.toast("Custom tables deleted! Back to clean College Demo.")
+                st.rerun()
 
 st.markdown('<div class="header-hero-spacer"></div>', unsafe_allow_html=True)
 
