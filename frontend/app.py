@@ -223,6 +223,18 @@ VOICE_BAR_HTML = r"""<!doctype html>
   }
   .send:hover { transform:translateY(-1px); box-shadow:0 10px 22px rgba(244,63,94,.42); }
   .send:disabled { opacity:.45; cursor:default; transform:none; box-shadow:none; }
+  .send.loading {
+    background: linear-gradient(135deg, #94a3b8, #64748b) !important;
+    cursor: not-allowed !important; pointer-events: none !important;
+    box-shadow: none !important; opacity: 0.8 !important;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .spin {
+    width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4);
+    border-top-color: #fff; border-radius: 50%;
+    animation: sp 0.7s linear infinite; display: inline-block;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
 
   /* live level bars, only while dictating */
   .wave { display:none; align-items:center; gap:3px; height:22px; flex:none; margin-left:-6px; }
@@ -282,7 +294,7 @@ VOICE_BAR_HTML = r"""<!doctype html>
   const $ = id => document.getElementById(id);
   const q = $('q'), bar = $('bar'), hint = $('hint'), mic = $('mic'), clearBtn = $('clear'), langBtn = $('lang'), sendBtn = $('send');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let lastPrefill = null, rec = null, want = false, base = '', committed = '', lang = 'en-IN';
+  let lastPrefill = null, rec = null, want = false, base = '', committed = '', lang = 'en-IN', isSubmitting = false;
 
   function post(type, data) {
     window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), '*');
@@ -292,9 +304,11 @@ VOICE_BAR_HTML = r"""<!doctype html>
     q.style.height = 'auto';
     const minH = window.innerWidth <= 600 ? 34 : 42;
     q.style.height = Math.max(minH, Math.min(q.scrollHeight, 120)) + 'px';
-    sendBtn.disabled = !q.value.trim();
+    if (!isSubmitting) {
+      sendBtn.disabled = !q.value.trim();
+    }
     if (clearBtn) {
-      clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';
+      clearBtn.style.display = (!want && !isSubmitting && q.value.trim().length > 0) ? 'flex' : 'none';
     }
     fit();
   }
@@ -302,7 +316,16 @@ VOICE_BAR_HTML = r"""<!doctype html>
 
   function submit() {
     const t = q.value.trim();
-    if (!t) return;
+    if (!t || isSubmitting) return;
+    isSubmitting = true;
+    sendBtn.disabled = true;
+    sendBtn.classList.add('loading');
+    sendBtn.innerHTML = '<span class="spin"></span> Running...';
+    q.disabled = true;
+    if (clearBtn) clearBtn.style.display = 'none';
+    if (mic) { mic.style.pointerEvents = 'none'; mic.style.opacity = '0.35'; }
+    fit();
+
     post('streamlit:setComponentValue', {
       value: { text: t, id: Date.now() + '-' + Math.random().toString(36).slice(2) },
       dataType: 'json'
@@ -395,6 +418,7 @@ VOICE_BAR_HTML = r"""<!doctype html>
     if (e.key === 'Escape' && want) { e.preventDefault(); stopListening(false); }
     else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (isSubmitting) return;
       if (want) stopListening(true); else submit();
     }
   });
@@ -403,6 +427,22 @@ VOICE_BAR_HTML = r"""<!doctype html>
     if (!ev.data || ev.data.type !== 'streamlit:render') return;
     const a = ev.data.args || {};
     q.placeholder = a.placeholder || 'Ask a question';
+    if (a.busy) {
+      isSubmitting = true;
+      sendBtn.disabled = true;
+      sendBtn.classList.add('loading');
+      sendBtn.innerHTML = '<span class="spin"></span> Running...';
+      q.disabled = true;
+      if (mic) { mic.style.pointerEvents = 'none'; mic.style.opacity = '0.35'; }
+      if (clearBtn) clearBtn.style.display = 'none';
+    } else {
+      isSubmitting = false;
+      q.disabled = false;
+      if (mic) { mic.style.pointerEvents = 'auto'; mic.style.opacity = '1'; }
+      sendBtn.classList.remove('loading');
+      sendBtn.textContent = 'Send';
+      sendBtn.disabled = !q.value.trim();
+    }
     if (a.prefill !== lastPrefill && !want) { q.value = a.prefill || ''; }
     lastPrefill = a.prefill;
     if (!SR) {
@@ -1011,9 +1051,11 @@ st.markdown(f"""
 # ------------------------------------------------------------------
 # Search bar (Primary Action - Type or Dictate)
 # ------------------------------------------------------------------
+is_query_busy = bool(st.session_state.get("auto_run", False))
 payload = query_bar(
     prefill=st.session_state["query_input"],
     placeholder=f"Ask about {active_name}, or tap the mic and say it",
+    busy=is_query_busy,
     key="sql_query_bar",
     default=None,
 )
