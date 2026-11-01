@@ -50,7 +50,7 @@ try:
     import core.validator
     import core.agent
 
-    if not hasattr(core.database, "parse_pasted_data") or os.getenv("DEV_RELOAD") == "1":
+    if not hasattr(core.database, "parse_pasted_tables") or os.getenv("DEV_RELOAD") == "1":
         for _m in (core.prompts, core.database, core.validator, core.agent):
             try:
                 importlib.reload(_m)
@@ -64,6 +64,7 @@ try:
         create_file_session_db,
         create_mysql_db_manager,
         parse_pasted_data,
+        parse_pasted_tables,
     )
     local_agent_available = True
 except Exception as e:
@@ -660,11 +661,22 @@ def ask(text: str):
 
 def load_sample_paste_data(key: str):
     st.session_state[key] = (
-        "id\tname\tdepartment\tsalary\n"
-        "101\tAarav\tEngineering\t85000\n"
-        "102\tSneha\tMarketing\t72000\n"
-        "103\tRohan\tSales\t65000\n"
-        "104\tPriya\tDesign\t70000"
+        "Customers table:\n"
+        "+----+-------+\n"
+        "| id | name  |\n"
+        "+----+-------+\n"
+        "| 1  | Joe   |\n"
+        "| 2  | Henry |\n"
+        "| 3  | Sam   |\n"
+        "| 4  | Max   |\n"
+        "+----+-------+\n\n"
+        "Orders table:\n"
+        "+----+------------+\n"
+        "| id | customerId |\n"
+        "+----+------------+\n"
+        "| 1  | 3          |\n"
+        "| 2  | 1          |\n"
+        "+----+------------+"
     )
 
 
@@ -738,14 +750,14 @@ def render_database_source_selector(key_prefix="main"):
 
     with tab_paste:
         st.markdown("<div style='font-size:.92rem; font-weight:700; color:#1e293b; margin-top:6px;'>Paste Raw Data Directly</div>", unsafe_allow_html=True)
-        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Copy rows directly from Excel, Google Sheets, or CSV text and paste below. The system automatically structures and loads your table.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted' style='margin-bottom:10px;'>Paste single or multi-table data (LeetCode tables, Excel, Sheets, or CSV). Multiple tables are automatically detected and separated!</div>", unsafe_allow_html=True)
 
         ptext_key = f"{key_prefix}_ptext"
         pasted_text = st.text_area(
             "Paste raw data here",
-            height=135,
+            height=145,
             key=ptext_key,
-            placeholder="id\tname\tdepartment\tsalary\n101\tAarav\tEngineering\t85000\n102\tSneha\tMarketing\t72000"
+            placeholder="Customers table:\n+----+-------+\n| id | name  |\n+----+-------+\n| 1  | Joe   |\n\nOrders table:\n+----+------------+\n| id | customerId |\n+----+------------+\n| 1  | 3          |"
         )
 
         btn_col1, btn_col2 = st.columns([1, 1])
@@ -764,19 +776,21 @@ def render_database_source_selector(key_prefix="main"):
             if not pasted_text or not pasted_text.strip():
                 st.error("Please paste some tabular data first.")
             else:
-                with st.spinner("Processing & building query table..."):
+                with st.spinner("Processing & building query table(s)..."):
                     try:
-                        df = parse_pasted_data(pasted_text)
-                        if df.empty or len(df.columns) == 0:
+                        tables = parse_pasted_tables(pasted_text)
+                        if not tables:
                             st.error("Could not parse columns from pasted text. Please check format.")
                         else:
                             st.session_state["uploaded_db"] = create_file_session_db(
-                                {"user_data": df},
+                                tables,
                                 session_id=f"user_{st.session_state['sid']}"
                             )
                             st.session_state["active_source"] = "upload"
                             reset_conversation()
-                            st.toast(f"Data ready! Loaded {len(df)} rows & {len(df.columns)} columns into 'user_data'.")
+                            t_names = list(tables.keys())
+                            total_rows = sum(len(df) for df in tables.values())
+                            st.toast(f"Data ready! Loaded {len(t_names)} table(s): {', '.join(t_names)} ({total_rows} total rows).")
                             st.rerun()
                     except Exception as err:
                         st.error(f"Failed to parse table: {err}")

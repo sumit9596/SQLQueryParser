@@ -3,7 +3,7 @@ import os
 import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from core.database import parse_pasted_data, create_file_session_db
+from core.database import parse_pasted_data, parse_pasted_tables, create_file_session_db
 
 
 def test_parse_tsv():
@@ -34,6 +34,44 @@ def test_parse_markdown_table():
     assert df.iloc[1]["product_name"] == "Mechanical Keyboard"
 
 
+def test_leetcode_multi_table():
+    raw_user_input = """Input: 
+Customers table:
++----+-------+
+| id | name  |
++----+-------+
+| 1  | Joe   |
+| 2  | Henry |
+| 3  | Sam   |
+| 4  | Max   |
++----+-------+
+Orders table:
++----+------------+
+| id | customerId |
++----+------------+
+| 1  | 3          |
+| 2  | 1          |
++----+------------+"""
+    tables = parse_pasted_tables(raw_user_input)
+    assert "customers" in tables
+    assert "orders" in tables
+    assert len(tables["customers"]) == 4
+    assert len(tables["orders"]) == 2
+    assert list(tables["customers"].columns) == ["id", "name"]
+    assert list(tables["orders"].columns) == ["id", "customerId"]
+
+    db = create_file_session_db(tables, session_id="test_lc_multi")
+    rep = db.get_schema_representation()
+    assert "customers" in rep
+    assert "orders" in rep
+
+    res = db.execute_query("SELECT name FROM customers WHERE id NOT IN (SELECT customerId FROM orders)")
+    assert res["success"] is True
+    names = [r["name"] for r in res["rows"]]
+    assert "Henry" in names
+    assert "Max" in names
+
+
 def test_create_session_db_from_pasted():
     raw_data = "colA\tcolB\n10\t20\n30\t40"
     df = parse_pasted_data(raw_data)
@@ -50,5 +88,6 @@ if __name__ == "__main__":
     test_parse_tsv()
     test_parse_csv()
     test_parse_markdown_table()
+    test_leetcode_multi_table()
     test_create_session_db_from_pasted()
     print("All pasted data tests passed successfully!")

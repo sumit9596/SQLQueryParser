@@ -256,48 +256,158 @@ def create_file_session_db(files_data: Dict[str, pd.DataFrame], session_id: str 
         dialect="sqlite"
     )
 
-def parse_pasted_data(text_content: str) -> pd.DataFrame:
+def _clean_pasted_col_name(c: Any, idx: int) -> str:
+    cleaned = str(c).strip()
+    cleaned = re.sub(r"^[^\w]+|[^\w]+$", "", cleaned).strip()
+    return cleaned or f"col_{idx}"
+
+
+def _parse_ascii_or_pipe_block(lines: List[str]) -> Optional[pd.DataFrame]:
+    content_lines = []
+    for ln in lines:
+        ln_str = ln.strip()
+        if not ln_str:
+            continue
+        # Divider line: +----+----+ or |---|---| or +====+
+        if re.match(r"^\+[\-+=\s]+\+$", ln_str) or re.match(r"^\|?[\s\-:|]+\|?$", ln_str):
+            continue
+        if "|" in ln_str:
+            stripped = ln_str.strip()
+            if stripped.startswith("|"):
+                stripped = stripped[1:]
+            if stripped.endswith("|"):
+                stripped = stripped[:-1]
+            cells = [c.strip() for c in stripped.split("|")]
+            content_lines.append(cells)
+
+    if not content_lines:
+        return None
+
+    headers = [_clean_pasted_col_name(c, i) for i, c in enumerate(content_lines[0])]
+    data = content_lines[1:]
+    if not data:
+        df = pd.DataFrame(columns=headers)
+    else:
+        norm_data = []
+        for row in data:
+            if len(row) < len(headers):
+                row = row + [""] * (len(headers) - len(row))
+            elif len(row) > len(headers):
+                row = row[:len(headers)]
+            norm_data.append(row)
+        df = pd.DataFrame(norm_data, columns=headers)
+
+    for col in df.columns:
+        try:
+            df[col] = pd.to_numeric(df[col])
+        except (ValueError, TypeError):
+            pass
+    return df
+
+
+def parse_pasted_tables(text_content: str) -> Dict[str, pd.DataFrame]:
     """
-    Parses raw user-pasted text into a clean DataFrame.
+    Parses single or multi-table raw user-pasted text into a dictionary of {table_name: DataFrame}.
     Supports:
+    - Multi-table pastes (LeetCode / HackerRank format: 'Customers table:\n+---+...+\nOrders table:\n+---+...+')
+    - MySQL CLI / ASCII grid tables (+----+----+ with | cells |)
     - Tab-separated (Excel / Google Sheets direct copy)
     - Comma-separated (CSV)
-    - Pipe-separated (Markdown tables)
-    - Auto-sniffed delimiters
+    - Markdown tables
     """
     cleaned = text_content.strip()
     if not cleaned:
         raise ValueError("Pasted text is empty.")
 
-    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-    # If markdown table with divider line (e.g. |---|---|)
-    if len(lines) >= 2 and any(re.match(r"^\|?[\s\-:|]+\|?$", ln) for ln in lines[1:3]):
-        filtered = [ln for ln in lines if not re.match(r"^\|?[\s\-:|]+\|?$", ln)]
-        normalized = []
-        for ln in filtered:
-            ln_str = re.sub(r"^\|", "", ln.strip()).strip()
-            ln_str = re.sub(r"\|$", "", ln_str).strip()
-            normalized.append(ln_str)
-        cleaned = "\n".join(normalized)
-        df = pd.read_csv(io.StringIO(cleaned), sep=r"\s*\|\s*", engine="python")
-    else:
-        # Auto-sniff delimiter
-        try:
-            df = pd.read_csv(io.StringIO(cleaned), sep=None, engine="python")
-        except Exception:
-            for candidate in ["\t", ",", ";"]:
-                try:
-                    df = pd.read_csv(io.StringIO(cleaned), sep=candidate)
-                    if len(df.columns) > 1:
-                        break
-                except Exception:
-                    continue
-            else:
-                df = pd.read_csv(io.StringIO(cleaned))
+    raw_lines = cleaned.splitlines()
+    tables: Dict[str, pd.DataFrame] = {}
+    current_name: Optional[str] = None
+    current_lines: List[str] = []
+    seen_closing_border = False
 
-    # Clean column names
-    df.columns = [re.sub(r"^[^\w]+|[^\w]+$", "", str(c)).strip() or f"col_{i}" for i, c in enumerate(df.columns)]
-    return df
+    table_title_pattern = re.compile(
+        r"^(?:#+\s*)?(?:(?:table\s*\d*\s*:\s*)|(?:table\s+of\s+)|(?:table\s+))?([a-zA-Z0-9_]+)(?:\s+table)?\s*:?\s*$",
+        re.IGNORECASE,
+    )
+
+    def flush_table():
+        nonlocal current_name, current_lines, seen_closing_border
+        if not current_lines:
+            return
+
+        if any("|" in l for l in current_lines):
+            df = _parse_ascii_or_pipe_block(current_lines)
+        else:
+            block = "\n".join(current_lines).strip()
+            try:
+                df = pd.read_csv(io.StringIO(block), sep=None, engine="python")
+                df.columns = [_clean_pasted_col_name(c, i) for i, c in enumerate(df.columns)]
+            except Exception:
+                for cand in ["\t", ",", ";"]:
+                    try:
+                        df = pd.read_csv(io.StringIO(block), sep=cand)
+                        if len(df.columns) > 1:
+                            df.columns = [_clean_pasted_col_name(c, i) for i, c in enumerate(df.columns)]
+                            break
+                    except Exception:
+                        continue
+                else:
+                    df = None
+
+        if df is not None and not df.empty and len(df.columns) > 0:
+            final_name = current_name or (f"table_{len(tables)+1}" if len(tables) > 0 else "user_data")
+            final_name = re.sub(r"[^\w]+", "_", final_name).strip("_").lower() or f"table_{len(tables)+1}"
+            if final_name in tables:
+                final_name = f"{final_name}_{len(tables)+1}"
+            tables[final_name] = df
+
+        current_name = None
+        current_lines = []
+        seen_closing_border = False
+
+    for line in raw_lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            if seen_closing_border:
+                flush_table()
+            continue
+
+        if line_stripped.lower().startswith("input:"):
+            after_input = line_stripped[6:].strip()
+            if not after_input:
+                continue
+            line_stripped = after_input
+
+        m = table_title_pattern.match(line_stripped)
+        if m and not line_stripped.startswith("+") and not line_stripped.startswith("|"):
+            flush_table()
+            current_name = m.group(1).strip()
+            continue
+
+        is_border = bool(re.match(r"^\+[\-+=\s]+\+$", line_stripped))
+        if is_border:
+            has_data = any("|" in l and not re.match(r"^\|?[\s\-:|]+\|?$", l) for l in current_lines)
+            if has_data and seen_closing_border:
+                flush_table()
+                current_lines.append(line_stripped)
+                continue
+            elif has_data:
+                current_lines.append(line_stripped)
+                seen_closing_border = True
+                continue
+
+        current_lines.append(line_stripped)
+
+    flush_table()
+    return tables
+
+
+def parse_pasted_data(text_content: str) -> pd.DataFrame:
+    """Backward compatibility wrapper returning the first or primary parsed DataFrame."""
+    tables = parse_pasted_tables(text_content)
+    if not tables:
+        raise ValueError("Could not parse table data from pasted text.")
+    return next(iter(tables.values()))
 
 def create_mysql_db_manager(
     host: str,
