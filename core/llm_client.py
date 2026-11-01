@@ -19,14 +19,12 @@ load_dotenv()
 
 # Primary and verified fallback models in 2026
 DEFAULT_MODEL = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
-FALLBACK_MODELS = [
+FALLBACK_MODELS = list(dict.fromkeys([
     DEFAULT_MODEL,
-    "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-flash-lite-latest",
-    "gemini-2.0-flash",
-    "gemini-3-flash-preview"
-]
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
+]))
 
 # Singleton client instance and active key index
 _cached_client = None
