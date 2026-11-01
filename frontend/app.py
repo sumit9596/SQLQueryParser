@@ -563,11 +563,40 @@ header[data-testid="stHeader"] { background: transparent !important; color: #0f1
     transform: translateY(-1px) !important; box-shadow: 0 8px 18px rgba(244,63,94,.13) !important;
 }
 
-/* Popover + tabs */
+/* Popover + tabs - Clean fixed dimensions to prevent runaway expansion */
+div[data-baseweb="popover"],
 [data-testid="stPopoverBody"] {
-    background: #fff !important; border: 1px solid rgba(226,232,240,.95) !important;
-    border-radius: 20px !important; padding: 20px !important;
-    box-shadow: 0 25px 60px rgba(148,163,184,.2) !important; color: #0f172a !important;
+    max-width: min(700px, 92vw) !important;
+}
+[data-testid="stPopoverBody"] {
+    width: 680px !important;
+    max-height: 80vh !important;
+    background: #fff !important;
+    border: 1px solid rgba(226,232,240,.95) !important;
+    border-radius: 20px !important;
+    padding: 18px 20px !important;
+    box-shadow: 0 25px 60px rgba(148,163,184,.25) !important;
+    color: #0f172a !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    box-sizing: border-box !important;
+}
+[data-testid="stPopoverBody"] [data-testid="stDataFrame"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+}
+[data-testid="stPopoverBody"] div[data-baseweb="tab-list"] {
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    padding-bottom: 8px !important;
+    scrollbar-width: thin !important;
+}
+[data-testid="stPopoverBody"] button[data-baseweb="tab"] {
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
 }
 button[data-baseweb="tab"] {
     background: #f1f5f9 !important; color: #0f172a !important; font-weight: 700 !important;
@@ -582,7 +611,12 @@ button[data-baseweb="tab"]:hover { background: #e2e8f0 !important; }
 button[data-baseweb="tab"][aria-selected="true"]:hover { background: linear-gradient(135deg,#f43f5e,#ec4899) !important; }
 
 [data-testid="stDataFrame"], div[data-testid="stTable"] {
-    background: #fff !important; border-radius: 14px !important; border: 1px solid #e2e8f0 !important; overflow: hidden !important;
+    background: #fff !important;
+    border-radius: 14px !important;
+    border: 1px solid #e2e8f0 !important;
+    overflow: auto !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
 }
 
 /* Result card (top level only, so nested cards stay flat) */
@@ -921,7 +955,7 @@ with top_c3:
                     if res_p["success"]:
                         cols_str = ", ".join(f"<code>{esc(str(c))}</code>" for c in res_p["columns"][:8])
                         st.markdown(f"<div class='small-muted' style='margin-bottom:8px;'>Columns: {cols_str}</div>", unsafe_allow_html=True)
-                        st.dataframe(pd.DataFrame(res_p["rows"]), width="stretch")
+                        st.dataframe(pd.DataFrame(res_p["rows"]), height=240, width="stretch")
                     else:
                         st.warning(f"Couldn't preview {t_name}: {res_p.get('error')}")
 
@@ -1118,7 +1152,8 @@ if result:
                 if total_rows > max_display:
                     row_label += f" (showing first {max_display:,})"
                 st.markdown(f"#### Results ({row_label})")
-                st.dataframe(display_df, width="stretch")
+                res_tbl_h = min(400, max(140, len(display_df) * 36 + 40))
+                st.dataframe(display_df, height=res_tbl_h, width="stretch")
 
                 e1, e2 = st.columns(2)
                 with e1:
