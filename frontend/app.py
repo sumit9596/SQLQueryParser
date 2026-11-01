@@ -314,6 +314,19 @@ VOICE_BAR_HTML = r"""<!doctype html>
   }
   function setHint(t, err) { hint.textContent = t || ''; hint.className = 'hint' + (err ? ' err' : ''); }
 
+  function resetSubmitState() {
+    isSubmitting = false;
+    q.disabled = false;
+    if (mic) { mic.style.pointerEvents = 'auto'; mic.style.opacity = '1'; }
+    sendBtn.classList.remove('loading');
+    sendBtn.textContent = 'Send';
+    sendBtn.disabled = !q.value.trim();
+    if (clearBtn) {
+      clearBtn.style.display = (!want && q.value.trim().length > 0) ? 'flex' : 'none';
+    }
+    fit();
+  }
+
   function submit() {
     const t = q.value.trim();
     if (!t || isSubmitting) return;
@@ -330,6 +343,9 @@ VOICE_BAR_HTML = r"""<!doctype html>
       value: { text: t, id: Date.now() + '-' + Math.random().toString(36).slice(2) },
       dataType: 'json'
     });
+
+    // Fallback safety timeout so button NEVER gets stuck
+    setTimeout(resetSubmitState, 3500);
   }
 
   function show(interim) {
@@ -1142,6 +1158,7 @@ if st.session_state.get("auto_run") and st.session_state["query_input"].strip():
         if res.get("success"):
             new_hist = res.get("history", st.session_state["chat_history"])
             st.session_state["chat_history"] = new_hist[-6:] if len(new_hist) > 6 else new_hist
+    st.rerun()
 
 # ------------------------------------------------------------------
 # Result
