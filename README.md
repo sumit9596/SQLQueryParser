@@ -1,16 +1,24 @@
 # Autonomous Text-to-SQL AI Agent
 
-An enterprise-ready **Natural Language to SQL (Text-to-SQL)** AI engine built with **Python, FastAPI, SQLAlchemy, Google Gemini, and Streamlit**. It translates natural language questions into secure, optimized SQL queries with automated dynamic schema extraction, safety AST guardrails, self-healing error correction, and multi-format result visualization.
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sql-parser.streamlit.app/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> 🚀 **Live Demo:** [https://sql-parser.streamlit.app/](https://sql-parser.streamlit.app/)
+
+An enterprise-ready **Natural Language to SQL (Text-to-SQL)** AI engine built with **Python, SQLAlchemy, Google Gemini, and Streamlit**. It translates natural language questions into secure, optimized SQL queries with automated dynamic schema extraction, safety AST guardrails, self-healing error correction, multi-format result visualization, and real-time speech dictation.
 
 ---
 
 ## 🌟 Key Features
 
-1. **Dynamic Schema-Grounding**: Uses SQLAlchemy to inspect database tables, columns, and foreign keys at runtime—eliminating hardcoded schemas and hallucinated columns.
-2. **Relevance & Intent Gatekeeper**: Pre-generation check that detects out-of-scope inquiries (e.g. general knowledge, sports) and safely rejects them before querying the database.
-3. **AST Safety Guardrail**: Evaluates queries with `sqlglot` to enforce strictly read-only `SELECT` queries, instantly blocking `DROP`, `DELETE`, `UPDATE`, and multi-statement injections.
-4. **Self-Healing Execution Loop**: Automatically captures SQL execution errors (syntax errors, column mismatches) and feeds them back to the LLM to auto-correct and retry without crashing.
-5. **Decoupled Architecture**: Built as a microservice with a **FastAPI backend** and an interactive **Streamlit frontend**.
+1. **Live Web & Speech Interface**: Ask questions via typing or real-time voice dictation (English & Hindi).
+2. **Direct Copy-Paste & Multi-Table Ingestion**: Paste raw data directly from Excel, Google Sheets, or LeetCode ASCII grid tables without saving files.
+3. **Dynamic Schema-Grounding**: Uses SQLAlchemy to inspect database tables, columns, and foreign keys at runtime—eliminating hardcoded schemas and hallucinated columns.
+4. **Relevance & Intent Gatekeeper**: Pre-generation check that detects out-of-scope inquiries (e.g. general knowledge, sports) and safely rejects them before querying the database.
+5. **AST Safety Guardrail**: Evaluates queries with `sqlglot` to enforce strictly read-only `SELECT` queries, instantly blocking `DROP`, `DELETE`, `UPDATE`, and multi-statement injections.
+6. **Self-Healing Execution Loop**: Automatically captures SQL execution errors (syntax errors, column mismatches) and feeds them back to the LLM to auto-correct and retry without crashing.
+7. **Multi-Source Support**: Seamlessly switches between College Demo SQLite, In-Memory Session Tables, and live remote MySQL databases.
 
 ---
 
